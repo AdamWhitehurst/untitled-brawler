@@ -296,12 +296,12 @@ fn move_camera(/* identical to examples/terrain.rs:55-86 */) { /* ... */ }
 #### Automated
 - [x] `cargo check-all` passes
 - [x] `cargo test-all` passes (all existing tests still green)
-- [ ] `cargo run --example terrain` renders identically to master (cubic default preserved)
+- [x] `cargo run --example terrain` renders identically to master (cubic default preserved)
 
 #### Manual
-- [ ] `cargo run --example stepped_terrain` launches and renders the fixture **cubic** (stub phase — slopes come in Phase 2)
-- [ ] Tracy/log shows `drain_gen_queue: meshing_mode=Sloped` and `spawn_remesh_tasks: ... meshing_mode=Sloped` when running `stepped_terrain`
-- [ ] Same logs read `Cubic` when running `cargo run --example terrain`
+- [x] `cargo run --example stepped_terrain` launches and renders the fixture **cubic** (stub phase — slopes come in Phase 2)
+- [x] Tracy/log shows `drain_gen_queue: meshing_mode=Sloped` and `spawn_remesh_tasks: ... meshing_mode=Sloped` when running `stepped_terrain`
+- [x] Same logs read `Cubic` when running `cargo run --example terrain`
 
 ---
 
@@ -509,8 +509,8 @@ mod tests {
 ### Verification
 
 #### Automated
-- [ ] `cargo check-all` passes
-- [ ] `cargo test-all` passes, including new `staircase_emits_planar_slopes` and `flat_region_merges_to_single_quad`
+- [x] `cargo check-all` passes
+- [x] `cargo test-all` passes, including new `staircase_emits_planar_slopes` and `flat_region_merges_to_single_quad`
 
 #### Manual
 - [ ] `cargo run --example stepped_terrain` renders the staircase strip as 45° ramps

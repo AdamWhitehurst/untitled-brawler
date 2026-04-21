@@ -5,6 +5,9 @@ use bevy::prelude::*;
 use block_mesh::{GreedyQuadsBuffer, RIGHT_HANDED_Y_UP_CONFIG, greedy_quads};
 use ndshape::Shape;
 
+mod sloped;
+pub use sloped::mesh_chunk_sloped;
+
 pub use crate::config::MeshingMode;
 use crate::types::WorldVoxel;
 
@@ -18,14 +21,6 @@ pub fn mesh_chunk<S: Shape<3, Coord = u32>>(
         MeshingMode::Cubic => mesh_chunk_greedy(voxels, shape),
         MeshingMode::Sloped => mesh_chunk_sloped(voxels, shape),
     }
-}
-
-/// Slope-aware mesher. Phase 1: delegates to greedy (stub for plumbing).
-pub fn mesh_chunk_sloped<S: Shape<3, Coord = u32>>(
-    voxels: &[WorldVoxel],
-    shape: &S,
-) -> Option<Mesh> {
-    mesh_chunk_greedy(voxels, shape)
 }
 
 /// Mesh a padded voxel array into a Bevy Mesh using greedy quads.
