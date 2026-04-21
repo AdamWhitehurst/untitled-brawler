@@ -723,7 +723,9 @@ Delete `emit_cubic_walls_simple` — `mesh_chunk_sloped` now calls `emit_walls` 
 - [x] `cargo test-native` passes with new tests:
   - [x] `cliff_wall_merges_horizontally` — Δ=3 cliff wall merges across columns
   - [x] `wall_triangle_area_above_parry_threshold` — area check guards against degenerate triangles
-  - Deviation: `saddle_emits_triangular_walls` omitted. The SteppedGenerator saddle fixture can't produce 1-mismatch corners under corner-max (both A and B read the same 4 contributing heights with the same own_h where relevant, so they always agree or both disagree). The triangle code path exists but isn't exercised by the fixture. Would require a different corner rule or a handcrafted voxel array to trigger.
+  - [x] `make_triangle_wall_x_produces_nondegenerate_triangles` — direct classifier-branch coverage
+  - [x] `stepped_generator_all_chunks_no_degenerate_triangles` — regression test; meshes every chunk the SteppedGenerator fixture can occupy and verifies the area assertion doesn't fire
+  - Deviation: `saddle_emits_triangular_walls` replaced with the two tests above. Saddle triangles DO fire in the SteppedGenerator fixture (e.g., chunk (0, 0, 0) edges near the cross-depression z-arm). An early implementation had swapped args in the `(false, true)` classifier branch that produced degenerate triangles; the regression test catches that.
 
 #### Manual
 - [ ] `cargo run --example stepped_terrain` saddle section shows the two low corners filled with triangular walls; no cracks
