@@ -545,9 +545,24 @@ enum Diagonal {
     Anti,
 }
 
-/// Pick the diagonal that puts the ridge along the higher pair of corners.
+/// Pick the diagonal so a single-odd-corner cell renders as a flat triangle
+/// (three equal corners) plus one tilted triangle (containing the odd corner).
+/// Splitting THROUGH the odd corner would emit two tilted triangles meeting
+/// at a ridge line, visible as a spike at the cell. Two-distinct-pair saddles
+/// fall through to the historical "split along the higher pair" rule.
 fn choose_diagonal(corners: &[i32; 4]) -> Diagonal {
     let [c00, c10, c01, c11] = *corners;
+    let vals = [c00, c10, c01, c11];
+    for i in 0..4 {
+        let others = [vals[(i + 1) % 4], vals[(i + 2) % 4], vals[(i + 3) % 4]];
+        if others[0] == others[1] && others[1] == others[2] && vals[i] != others[0] {
+            return match i {
+                0 | 3 => Diagonal::Anti,
+                1 | 2 => Diagonal::Main,
+                _ => unreachable!(),
+            };
+        }
+    }
     if (c00 + c11) >= (c10 + c01) {
         Diagonal::Main
     } else {
@@ -1239,10 +1254,22 @@ mod tests {
     }
 
     #[test]
-    fn choose_diagonal_main_for_convex() {
-        // Convex hip: c00+c11 > c10+c01 → main diagonal (ridge along main).
-        assert_eq!(choose_diagonal(&[5, 4, 4, 4]), Diagonal::Main);
-        assert_eq!(choose_diagonal(&[3, 3, 3, 3]), Diagonal::Main); // tie defaults to Main
+    fn choose_diagonal_beveled_tip_for_single_odd_corner() {
+        // Single raised corner on main diagonal → split anti-diagonal.
+        assert_eq!(choose_diagonal(&[5, 4, 4, 4]), Diagonal::Anti); // c00 raised
+        assert_eq!(choose_diagonal(&[4, 4, 4, 5]), Diagonal::Anti); // c11 raised
+        // Single raised corner on anti diagonal → split main.
+        assert_eq!(choose_diagonal(&[4, 5, 4, 4]), Diagonal::Main); // c10 raised
+        assert_eq!(choose_diagonal(&[4, 4, 5, 4]), Diagonal::Main); // c01 raised
+        // Single sunk corner follows the same rule.
+        assert_eq!(choose_diagonal(&[0, 1, 1, 1]), Diagonal::Anti); // c00 sunk
+        assert_eq!(choose_diagonal(&[1, 0, 1, 1]), Diagonal::Main); // c10 sunk
+    }
+
+    #[test]
+    fn choose_diagonal_tie_defaults_to_main() {
+        // No odd corner → fallthrough. Equal-sum tie keeps Main.
+        assert_eq!(choose_diagonal(&[3, 3, 3, 3]), Diagonal::Main);
     }
 
     #[test]
@@ -1256,11 +1283,13 @@ mod tests {
         use crate::config::VoxelGeneratorImpl;
         use crate::terrain::SteppedGenerator;
 
-        // The pyramid's corner columns at (1, 1), (-1, 1), (1, -1), (-1, -1) have
-        // asymmetric corner heights and should classify NonPlanar with Main
-        // diagonal (convex hip). We verify by checking that the emitted mesh
-        // contains at least one triangle (3 consecutive positions) corresponding
-        // to a pyramid-tip column with slope > 45° (indicating a hip ridge).
+        // Pyramid single-raised-corner hip cells render under Phase 4.6 as
+        // beveled tips: one flat triangle (normal = (0, 1, 0)) at the lower
+        // level plus one tilted triangle with normal along the `(1, 1, 1)/√3`
+        // family (all three components ≈ 0.577, one of `n[0]`/`n[2]` possibly
+        // negative depending on which corner is raised). We assert that at
+        // least one such tilted normal exists — the flat component blends
+        // in with the pyramid's planar rings, so we don't assert on it.
         let generator = SteppedGenerator {
             chunk_size: 16,
             shape: padded_shape(),
@@ -1273,21 +1302,18 @@ mod tests {
             .unwrap()
             .as_float3()
             .unwrap();
-        // Pyramid hip triangles on NonPlanar cols emit normals of the form
-        // (±0.707, 0.707, 0) or (0, 0.707, ±0.707) — tilted in y plus one
-        // horizontal axis. If these are absent, hip classification broke.
+        const S: f32 = 0.5773;
         let hip_count = normals
             .iter()
             .filter(|n| {
-                let y_half = (n[1] - 0.7071).abs() < 0.02;
-                let x_tilt = (n[0].abs() - 0.7071).abs() < 0.02 && n[2].abs() < 0.02;
-                let z_tilt = n[0].abs() < 0.02 && (n[2].abs() - 0.7071).abs() < 0.02;
-                y_half && (x_tilt || z_tilt)
+                (n[0].abs() - S).abs() < 0.02
+                    && (n[1] - S).abs() < 0.02
+                    && (n[2].abs() - S).abs() < 0.02
             })
             .count();
         assert!(
             hip_count > 0,
-            "pyramid should emit hip-triangle normals (got {} of {})",
+            "pyramid should emit beveled-tip tilted normals (x≈±0.577, y≈0.577, z≈±0.577); got {} of {}",
             hip_count,
             normals.len()
         );

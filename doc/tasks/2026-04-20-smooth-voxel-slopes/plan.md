@@ -855,6 +855,88 @@ Call site at `mesh_chunk_sloped` already passes `&heights`; the `_heights` param
 
 ---
 
+## Phase 4.6: Beveled Hip Diagonal
+
+### Problem
+
+`choose_diagonal` currently splits a NonPlanar cell along the diagonal whose two corner sum is highest (Main if `c00+c11 >= c10+c01`, else Anti). Applied to a single-odd-corner hip like `[H, h, h, h]` (c00 raised) the split passes *through* the raised corner, producing two tilted triangles that meet at a ridge line — a sail/wedge shape.
+
+The desired shape at a single-raised-corner hip is **1 flat triangle at `y = h` + 1 tilted triangle containing the raised corner** — a beveled tip. This is what the current rule produces *by accident* when the raised corner is `c10` or `c01` (the Anti diagonal), because then the Main split excludes that corner from one triangle. For `c00` or `c11` raised, the shape is wrong.
+
+Screenshot bug: natural heightmap terrain shows ridge wedges ("spikes") at every convex corner where the raised diagonal is main. The user's earlier screenshot circled a `c10`/`c01`-raised corner that renders correctly under current code; everywhere else produces the ridge artifact.
+
+### Fix
+
+Special-case the single-odd-corner configuration in `choose_diagonal`: split *away from* the odd corner so one triangle is the three equal corners (flat at `h`) and the other is the triangle containing the odd corner (tilted).
+
+- Odd at `c00` or `c11` (corners on main diagonal) → return `Anti`.
+- Odd at `c10` or `c01` (corners on anti diagonal) → return `Main`.
+- Two or more corners differ (saddle/valley) → keep the existing comparison.
+
+### Changes
+
+#### 1. Rule update
+**File**: `crates/voxel_map_engine/src/meshing/sloped.rs`
+**Action**: modify `choose_diagonal`
+
+```rust
+fn choose_diagonal(corners: &[i32; 4]) -> Diagonal {
+    let [c00, c10, c01, c11] = *corners;
+    // Single-odd-corner hip/valley: put the split AWAY from the odd corner
+    // so the resulting triangles are one flat (three equal corners) + one
+    // tilted (containing the odd corner). A ridge/wedge shape (split THROUGH
+    // the odd corner) looks like a spike at the cell and does not match the
+    // expected beveled-tip visual.
+    let vals = [c00, c10, c01, c11];
+    for i in 0..4 {
+        let others: [i32; 3] = [vals[(i + 1) % 4], vals[(i + 2) % 4], vals[(i + 3) % 4]];
+        if others[0] == others[1] && others[1] == others[2] && vals[i] != others[0] {
+            return match i {
+                0 | 3 => Diagonal::Anti,
+                1 | 2 => Diagonal::Main,
+                _ => unreachable!(),
+            };
+        }
+    }
+    // Saddle / valley with two distinct pairs: split along the higher pair so
+    // the seam runs along the raised diagonal (keeps the existing behavior
+    // for `handcrafted_valley_column_uses_anti_diagonal`).
+    if (c00 + c11) >= (c10 + c01) {
+        Diagonal::Main
+    } else {
+        Diagonal::Anti
+    }
+}
+```
+
+#### 2. Flip `choose_diagonal_main_for_convex`
+**File**: `crates/voxel_map_engine/src/meshing/sloped.rs`
+**Action**: modify test
+
+Rename to `choose_diagonal_anti_for_single_raised_main_corner` (or similar) and flip its assertion. The `[3,3,3,3]` tie case stays Main via the fallthrough.
+
+#### 3. Rewrite `pyramid_tip_emits_hip_triangles`
+**File**: `crates/voxel_map_engine/src/meshing/sloped.rs`
+**Action**: modify test
+
+The old test asserts a `(±0.707, 0.707, 0)` or `(0, 0.707, ±0.707)` hip normal — that's Main-diagonal 45° tilt on a single axis. With Anti on a c00-raised hip the tilted normal becomes `(1, 1, 1)/√3 ≈ (0.577, 0.577, 0.577)` and the flat triangle contributes `(0, 1, 0)`. Replace with an assertion that both patterns appear.
+
+### Verification
+
+#### Automated
+- [x] `cargo check-all` passes
+- [x] `cargo test -p voxel_map_engine --lib` passes (132/132)
+- [x] New `choose_diagonal_beveled_tip_for_single_odd_corner` covers all 4 raised and 2 sunk single-odd cases; `choose_diagonal_tie_defaults_to_main` covers the all-equal tie
+- [x] `choose_diagonal_anti_for_concave` and `handcrafted_valley_column_uses_anti_diagonal` still pass
+- [x] `pyramid_tip_emits_hip_triangles` rewritten to assert the `(±0.577, 0.577, ±0.577)` beveled-tip tilted normal
+
+#### Manual
+- [ ] `cargo run --example terrain` with heightmap noise: convex corners render as beveled tips (flat triangle at lower level + single tilted slope) rather than pointy spikes
+- [ ] `cargo run --example stepped_terrain`: pyramid's outer-ring corner columns render as beveled tips. Silhouette of pyramid loses the four sharp edge-ridges but still has the tiered stack shape
+- [ ] Staircase, reversed staircase, saddle, cliff fixtures visually unchanged from their Phase 4.5 state (except where saddle cells contain single-odd configurations — those switch to beveled)
+
+---
+
 ## Phase 5: Cross-Chunk Continuity + Integration Validation
 
 ### Changes
