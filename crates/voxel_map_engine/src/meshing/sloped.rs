@@ -84,7 +84,7 @@ pub fn mesh_chunk_sloped<S: Shape<3, Coord = u32>>(
     let mut buf = MeshBuffers::new();
     emit_planar_tops(&tops, padded_xz, &mut buf);
     emit_nonplanar_tops(&tops, padded_xz, &mut buf);
-    emit_cubic_walls_simple(&heights, &surface_heights, padded_xz, &mut buf);
+    emit_walls(&heights, &surface_heights, padded_xz, &mut buf);
     emit_bottom_faces(voxels, shape, &mut buf);
 
     if buf.is_empty() {
@@ -439,124 +439,349 @@ fn push_triangle(out: &mut MeshBuffers, a: [f32; 3], b: [f32; 3], c: [f32; 3]) {
     out.indices.extend_from_slice(&[base, base + 1, base + 2]);
 }
 
-/// Phase-2 placeholder wall emitter. For each shared edge at an interior-to-
-/// interior or interior-to-border boundary (+x and +z directions only —
-/// neighbor chunks own their own east/south boundaries, avoiding duplicates):
-///
-/// - Both columns have interior-owned tops (`heights` non-SENTINEL): use the
-///   corner rule on `heights`; emit a wall iff corners disagree (handles
-///   slopes/cliffs and preserves slope continuity).
-/// - Exactly one side's top lives in padding (pit with floor in the chunk
-///   below — `heights == SENTINEL` but `surface_heights` valid on the pit
-///   side): emit a simple axis wall from `surface_lo` to `surface_hi`. The
-///   corner rule can't detect these because it pulls corners to `max` on both
-///   sides, hiding the 1-unit gap.
-///
-/// Saddle edges (mixed-direction corner agreement) are approximated by a
-/// single rect in v1 — Phase 4 replaces this with a proper split.
-fn emit_cubic_walls_simple(
-    heights: &[i32],
-    surface_heights: &[i32],
-    padded_xz: usize,
-    out: &mut MeshBuffers,
-) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum EdgeAxis {
+    X,
+    Z,
+}
+
+/// Axis-aligned rectangular wall. `axis_len` spans the parallel axis in cells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WallRect {
+    axis: EdgeAxis,
+    /// For `EdgeAxis::X`: edge at mesh_x = `base_px + 1`; z-range
+    /// `[base_pz, base_pz + axis_len]`. For `EdgeAxis::Z`: edge at
+    /// mesh_z = `base_pz + 1`; x-range `[base_px, base_px + axis_len]`.
+    base_px: usize,
+    base_pz: usize,
+    axis_len: usize,
+    y_lo: i32,
+    y_hi: i32,
+    normal_positive: bool,
+}
+
+enum WallEmission {
+    Skip,
+    /// Saddle edge: one end flush, the other stepped. 3 vertices, flat normal.
+    Triangle {
+        vertices: [[f32; 3]; 3],
+    },
+    Rectangle(WallRect),
+}
+
+/// Avian/Parry rejects trimesh triangles below this surface area (≈ 1e-4).
+/// Assert we never emit degenerate saddle triangles — they'd silently corrupt
+/// the server collider.
+const MIN_PARRY_TRIANGLE_AREA: f32 = 1e-4;
+
+fn triangle_area(v: &[[f32; 3]; 3]) -> f32 {
+    let ab = Vec3::from(v[1]) - Vec3::from(v[0]);
+    let ac = Vec3::from(v[2]) - Vec3::from(v[0]);
+    ab.cross(ac).length() * 0.5
+}
+
+/// Phase-4 wall emitter. Iterates +x and +z shared edges (one-sided, so
+/// neighbor chunks own their east/south boundaries; avoids duplicates).
+/// Classifies each edge as Skip / Triangle (saddle) / Rectangle. Triangles
+/// emit immediately; rectangles are collected and greedy-merged along their
+/// parallel axis before emission.
+fn emit_walls(heights: &[i32], surface_heights: &[i32], padded_xz: usize, out: &mut MeshBuffers) {
+    let mut rects: Vec<WallRect> = Vec::new();
+
     for pz in 1..padded_xz - 1 {
         for px in 1..padded_xz - 1 {
-            let wall = classify_wall_x(heights, surface_heights, padded_xz, px, pz);
-            let Some((y_lo, y_hi, a_taller)) = wall else {
-                continue;
-            };
-            let x = (px + 1) as f32;
-            let (z1, z2) = (pz as f32, (pz + 1) as f32);
-            emit_wall_x(out, x, y_lo, y_hi, z1, z2, a_taller);
+            match classify_edge_x(heights, surface_heights, padded_xz, px, pz) {
+                WallEmission::Skip => {}
+                WallEmission::Triangle { vertices } => {
+                    debug_assert!(
+                        triangle_area(&vertices) >= MIN_PARRY_TRIANGLE_AREA,
+                        "saddle triangle at ({}, {}) axis=X below Parry tolerance",
+                        px,
+                        pz,
+                    );
+                    push_triangle(out, vertices[0], vertices[1], vertices[2]);
+                }
+                WallEmission::Rectangle(rect) => rects.push(rect),
+            }
         }
     }
     for px in 1..padded_xz - 1 {
         for pz in 1..padded_xz - 1 {
-            let wall = classify_wall_z(heights, surface_heights, padded_xz, px, pz);
-            let Some((y_lo, y_hi, a_taller)) = wall else {
-                continue;
-            };
-            let z = (pz + 1) as f32;
-            let (x1, x2) = (px as f32, (px + 1) as f32);
-            emit_wall_z(out, z, y_lo, y_hi, x1, x2, a_taller);
+            match classify_edge_z(heights, surface_heights, padded_xz, px, pz) {
+                WallEmission::Skip => {}
+                WallEmission::Triangle { vertices } => {
+                    debug_assert!(
+                        triangle_area(&vertices) >= MIN_PARRY_TRIANGLE_AREA,
+                        "saddle triangle at ({}, {}) axis=Z below Parry tolerance",
+                        px,
+                        pz,
+                    );
+                    push_triangle(out, vertices[0], vertices[1], vertices[2]);
+                }
+                WallEmission::Rectangle(rect) => rects.push(rect),
+            }
         }
+    }
+
+    for merged in greedy_merge_rectangle_walls(rects) {
+        emit_wall_rect(&merged, out);
     }
 }
 
-/// Decide whether a wall is needed on the +x edge between columns A `(px, pz)`
-/// and B `(px + 1, pz)`. Returns `(y_lo, y_hi, a_taller)` when emit is needed.
-fn classify_wall_x(
+fn classify_edge_x(
     heights: &[i32],
     surface_heights: &[i32],
     padded_xz: usize,
     px: usize,
     pz: usize,
-) -> Option<(f32, f32, bool)> {
+) -> WallEmission {
     let top_a = heights[px * padded_xz + pz];
     let top_b = heights[(px + 1) * padded_xz + pz];
     let surf_a = surface_heights[px * padded_xz + pz];
     let surf_b = surface_heights[(px + 1) * padded_xz + pz];
     if surf_a == SENTINEL_NO_SURFACE || surf_b == SENTINEL_NO_SURFACE {
-        return None;
+        return WallEmission::Skip;
     }
     if top_a != SENTINEL_NO_SURFACE && top_b != SENTINEL_NO_SURFACE {
         let (a10, a11) = east_edge_pair(heights, padded_xz, px, pz);
         let (b00, b01) = west_edge_pair(heights, padded_xz, px + 1, pz);
-        if (a10, a11) == (b00, b01) {
-            return None;
+        let lo_match = a10 == b00;
+        let hi_match = a11 == b01;
+        match (lo_match, hi_match) {
+            (true, true) => WallEmission::Skip,
+            (true, false) => make_triangle_wall_x(px, pz, a10, a11, b01, true),
+            (false, true) => make_triangle_wall_x(px, pz, a10, b00, a11, false),
+            (false, false) => WallEmission::Rectangle(WallRect {
+                axis: EdgeAxis::X,
+                base_px: px,
+                base_pz: pz,
+                axis_len: 1,
+                y_lo: a10.min(a11).min(b00).min(b01),
+                y_hi: a10.max(a11).max(b00).max(b01),
+                normal_positive: a10.max(a11) >= b00.max(b01),
+            }),
         }
-        let vals = [a10, a11, b00, b01];
-        let y_lo = *vals.iter().min().unwrap() as f32;
-        let y_hi = *vals.iter().max().unwrap() as f32;
-        let a_taller = a10.max(a11) >= b00.max(b01);
-        Some((y_lo, y_hi, a_taller))
     } else {
-        // Pit case: at least one side has its top in the padding row below.
-        // Corner rule smooths it away, so fall back to raw surface-height diff.
         if surf_a == surf_b {
-            return None;
+            return WallEmission::Skip;
         }
-        let y_lo = surf_a.min(surf_b) as f32;
-        let y_hi = surf_a.max(surf_b) as f32;
-        Some((y_lo, y_hi, surf_a >= surf_b))
+        WallEmission::Rectangle(WallRect {
+            axis: EdgeAxis::X,
+            base_px: px,
+            base_pz: pz,
+            axis_len: 1,
+            y_lo: surf_a.min(surf_b),
+            y_hi: surf_a.max(surf_b),
+            normal_positive: surf_a >= surf_b,
+        })
     }
 }
 
-/// Mirror of [`classify_wall_x`] for the +z edge between columns A `(px, pz)`
-/// and B `(px, pz + 1)`.
-fn classify_wall_z(
+fn classify_edge_z(
     heights: &[i32],
     surface_heights: &[i32],
     padded_xz: usize,
     px: usize,
     pz: usize,
-) -> Option<(f32, f32, bool)> {
+) -> WallEmission {
     let top_a = heights[px * padded_xz + pz];
     let top_b = heights[px * padded_xz + pz + 1];
     let surf_a = surface_heights[px * padded_xz + pz];
     let surf_b = surface_heights[px * padded_xz + pz + 1];
     if surf_a == SENTINEL_NO_SURFACE || surf_b == SENTINEL_NO_SURFACE {
-        return None;
+        return WallEmission::Skip;
     }
     if top_a != SENTINEL_NO_SURFACE && top_b != SENTINEL_NO_SURFACE {
         let (a01, a11) = south_edge_pair(heights, padded_xz, px, pz);
         let (b00, b10) = north_edge_pair(heights, padded_xz, px, pz + 1);
-        if (a01, a11) == (b00, b10) {
-            return None;
+        let lo_match = a01 == b00;
+        let hi_match = a11 == b10;
+        match (lo_match, hi_match) {
+            (true, true) => WallEmission::Skip,
+            (true, false) => make_triangle_wall_z(px, pz, a01, a11, b10, true),
+            (false, true) => make_triangle_wall_z(px, pz, a01, b00, a11, false),
+            (false, false) => WallEmission::Rectangle(WallRect {
+                axis: EdgeAxis::Z,
+                base_px: px,
+                base_pz: pz,
+                axis_len: 1,
+                y_lo: a01.min(a11).min(b00).min(b10),
+                y_hi: a01.max(a11).max(b00).max(b10),
+                normal_positive: a01.max(a11) >= b00.max(b10),
+            }),
         }
-        let vals = [a01, a11, b00, b10];
-        let y_lo = *vals.iter().min().unwrap() as f32;
-        let y_hi = *vals.iter().max().unwrap() as f32;
-        let a_taller = a01.max(a11) >= b00.max(b10);
-        Some((y_lo, y_hi, a_taller))
     } else {
         if surf_a == surf_b {
-            return None;
+            return WallEmission::Skip;
         }
-        let y_lo = surf_a.min(surf_b) as f32;
-        let y_hi = surf_a.max(surf_b) as f32;
-        Some((y_lo, y_hi, surf_a >= surf_b))
+        WallEmission::Rectangle(WallRect {
+            axis: EdgeAxis::Z,
+            base_px: px,
+            base_pz: pz,
+            axis_len: 1,
+            y_lo: surf_a.min(surf_b),
+            y_hi: surf_a.max(surf_b),
+            normal_positive: surf_a >= surf_b,
+        })
+    }
+}
+
+/// Build a saddle triangle for a +x edge. `step_high_z` = true means the
+/// stepped end is at z=pz+1 (low-z end is flush).
+fn make_triangle_wall_x(
+    px: usize,
+    pz: usize,
+    flush_y: i32,
+    step_a: i32,
+    step_b: i32,
+    step_high_z: bool,
+) -> WallEmission {
+    let x = (px + 1) as f32;
+    let (flush_z, step_z) = if step_high_z {
+        (pz as f32, (pz + 1) as f32)
+    } else {
+        ((pz + 1) as f32, pz as f32)
+    };
+    let v_flush = [x, flush_y as f32, flush_z];
+    let v_step_a = [x, step_a as f32, step_z];
+    let v_step_b = [x, step_b as f32, step_z];
+    WallEmission::Triangle {
+        vertices: [v_flush, v_step_a, v_step_b],
+    }
+}
+
+fn make_triangle_wall_z(
+    px: usize,
+    pz: usize,
+    flush_y: i32,
+    step_a: i32,
+    step_b: i32,
+    step_high_x: bool,
+) -> WallEmission {
+    let z = (pz + 1) as f32;
+    let (flush_x, step_x) = if step_high_x {
+        (px as f32, (px + 1) as f32)
+    } else {
+        ((px + 1) as f32, px as f32)
+    };
+    let v_flush = [flush_x, flush_y as f32, z];
+    let v_step_a = [step_x, step_a as f32, z];
+    let v_step_b = [step_x, step_b as f32, z];
+    WallEmission::Triangle {
+        vertices: [v_flush, v_step_a, v_step_b],
+    }
+}
+
+/// Greedy-merge adjacent rectangles sharing `(axis, perp, y_lo, y_hi,
+/// normal_positive)` along their parallel axis. Triangular saddle walls are
+/// NOT merged (v1).
+fn greedy_merge_rectangle_walls(rects: Vec<WallRect>) -> Vec<WallRect> {
+    use std::collections::BTreeMap;
+    // Key: (axis, perp coord, y_lo, y_hi, normal). Value: Vec<(parallel_start, len)>.
+    let mut groups: BTreeMap<(EdgeAxis, usize, i32, i32, bool), Vec<(usize, usize)>> =
+        BTreeMap::new();
+    for r in rects {
+        let (perp, parallel) = match r.axis {
+            EdgeAxis::X => (r.base_px, r.base_pz),
+            EdgeAxis::Z => (r.base_pz, r.base_px),
+        };
+        let key = (r.axis, perp, r.y_lo, r.y_hi, r.normal_positive);
+        groups.entry(key).or_default().push((parallel, r.axis_len));
+    }
+
+    let mut merged = Vec::new();
+    for ((axis, perp, y_lo, y_hi, normal_positive), mut entries) in groups {
+        entries.sort_by_key(|&(start, _)| start);
+        let mut current: Option<(usize, usize)> = None;
+        for (start, len) in entries {
+            match current {
+                None => current = Some((start, len)),
+                Some((c_start, c_len)) if c_start + c_len == start => {
+                    current = Some((c_start, c_len + len));
+                }
+                Some((c_start, c_len)) => {
+                    merged.push(make_merged_rect(
+                        axis,
+                        perp,
+                        c_start,
+                        c_len,
+                        y_lo,
+                        y_hi,
+                        normal_positive,
+                    ));
+                    current = Some((start, len));
+                }
+            }
+        }
+        if let Some((s, l)) = current {
+            merged.push(make_merged_rect(
+                axis,
+                perp,
+                s,
+                l,
+                y_lo,
+                y_hi,
+                normal_positive,
+            ));
+        }
+    }
+    merged
+}
+
+fn make_merged_rect(
+    axis: EdgeAxis,
+    perp: usize,
+    parallel_start: usize,
+    axis_len: usize,
+    y_lo: i32,
+    y_hi: i32,
+    normal_positive: bool,
+) -> WallRect {
+    let (base_px, base_pz) = match axis {
+        EdgeAxis::X => (perp, parallel_start),
+        EdgeAxis::Z => (parallel_start, perp),
+    };
+    WallRect {
+        axis,
+        base_px,
+        base_pz,
+        axis_len,
+        y_lo,
+        y_hi,
+        normal_positive,
+    }
+}
+
+fn emit_wall_rect(r: &WallRect, out: &mut MeshBuffers) {
+    match r.axis {
+        EdgeAxis::X => {
+            let x = (r.base_px + 1) as f32;
+            let z1 = r.base_pz as f32;
+            let z2 = (r.base_pz + r.axis_len) as f32;
+            emit_wall_x(
+                out,
+                x,
+                r.y_lo as f32,
+                r.y_hi as f32,
+                z1,
+                z2,
+                r.normal_positive,
+            );
+        }
+        EdgeAxis::Z => {
+            let z = (r.base_pz + 1) as f32;
+            let x1 = r.base_px as f32;
+            let x2 = (r.base_px + r.axis_len) as f32;
+            emit_wall_z(
+                out,
+                z,
+                r.y_lo as f32,
+                r.y_hi as f32,
+                x1,
+                x2,
+                r.normal_positive,
+            );
+        }
     }
 }
 
@@ -956,6 +1181,46 @@ mod tests {
         assert_eq!(corner_rule([5, 2, 5, 2], 2), 2);
         // SENTINEL neighbor: cliff-like. Keep own.
         assert_eq!(corner_rule([SENTINEL_NO_SURFACE, 3, 3, 3], 3), 3);
+    }
+
+    #[test]
+    fn cliff_wall_merges_horizontally() {
+        // 16 adjacent columns at h=3 on the +x side, h=0 on the -x side.
+        // Δ = 3 → cliff rule → each column classifies as Rectangle wall.
+        // Greedy merge should collapse them into ONE rectangle per z-row.
+        let voxels = heightmap_voxels(|x, _| if x >= 8 { 3 } else { 0 });
+        let shape = padded_shape();
+        let mesh = mesh_chunk_sloped(&voxels, &shape).expect("mesh");
+        let positions = mesh
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .unwrap()
+            .as_float3()
+            .unwrap();
+        // The +x-facing cliff has z-extent 16 (one per column without merging);
+        // merged, it's one rectangle per y-strip. Count vertices with x near
+        // the cliff plane (mesh x=9).
+        let cliff_verts = positions
+            .iter()
+            .filter(|p| (p[0] - 9.0).abs() < 0.01)
+            .count();
+        // Unmerged would be 16 cells × 4 verts = 64 (+ possibly bottom strip
+        // duplicates). Merged is ≤ 8 verts for two sloped strips + the cliff.
+        // Give generous bound: merging must cut it by at least half.
+        assert!(
+            cliff_verts < 40,
+            "cliff wall should greedy-merge: got {} vertices at x=9",
+            cliff_verts
+        );
+    }
+
+    #[test]
+    fn wall_triangle_area_above_parry_threshold() {
+        // Unit 1x1 saddle triangle has area 0.5, well above 1e-4.
+        let v = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        assert!(triangle_area(&v) > MIN_PARRY_TRIANGLE_AREA);
+        // Degenerate triangle (all colinear): area 0.
+        let degenerate = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+        assert!(triangle_area(&degenerate) < MIN_PARRY_TRIANGLE_AREA);
     }
 
     #[test]
