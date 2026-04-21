@@ -66,13 +66,6 @@ enum ColumnTop {
     NonPlanar { corners: [i32; 4], material: u8 },
 }
 
-fn column_corners(top: &ColumnTop) -> [i32; 4] {
-    match *top {
-        ColumnTop::Planar { corners, .. } => corners,
-        ColumnTop::NonPlanar { corners, .. } => corners,
-    }
-}
-
 /// Mesh a padded voxel array using corner-max sloped meshing.
 pub fn mesh_chunk_sloped<S: Shape<3, Coord = u32>>(
     voxels: &[WorldVoxel],
@@ -90,7 +83,7 @@ pub fn mesh_chunk_sloped<S: Shape<3, Coord = u32>>(
     let mut buf = MeshBuffers::new();
     emit_planar_tops(&tops, padded_xz, &mut buf);
     emit_nonplanar_tops_cubic_fallback(&tops, padded_xz, &mut buf);
-    emit_cubic_walls_simple(&tops, padded_xz, &mut buf);
+    emit_cubic_walls_simple(&heights, padded_xz, &mut buf);
     emit_bottom_faces(voxels, shape, &mut buf);
 
     if buf.is_empty() {
@@ -371,62 +364,168 @@ fn emit_nonplanar_tops_cubic_fallback(
     }
 }
 
-/// Phase-2 placeholder wall emitter. For each shared edge between interior
-/// columns, if the 4 corner y-values along the edge disagree, emit an
-/// axis-aligned wall rectangle spanning `[min, max]` of those corners.
-/// Saddle edges (mixed direction) are approximated by a single rect —
-/// Phase 4 replaces with a proper split.
-fn emit_cubic_walls_simple(tops: &[Option<ColumnTop>], padded_xz: usize, out: &mut MeshBuffers) {
+/// Phase-2 placeholder wall emitter. For each shared edge at an interior-to-
+/// interior or interior-to-border boundary (+x and +z directions only —
+/// neighbor chunks own their own east/south boundaries, avoiding duplicates),
+/// if the corner y-values along the edge disagree, emit an axis-aligned wall
+/// rectangle spanning `[min, max]` of those corners. Saddle edges (mixed
+/// direction) are approximated by a single rect — Phase 4 replaces this with
+/// a proper split.
+fn emit_cubic_walls_simple(heights: &[i32], padded_xz: usize, out: &mut MeshBuffers) {
     for pz in 1..padded_xz - 1 {
-        for px in 1..padded_xz - 2 {
-            let Some(a) = &tops[px * padded_xz + pz] else {
-                continue;
-            };
-            let Some(b) = &tops[(px + 1) * padded_xz + pz] else {
-                continue;
-            };
-            let ac = column_corners(a);
-            let bc = column_corners(b);
-            let a_edge = (ac[1], ac[3]);
-            let b_edge = (bc[0], bc[2]);
-            if a_edge == b_edge {
+        for px in 1..padded_xz - 1 {
+            let h_a = heights[px * padded_xz + pz];
+            let h_b = heights[(px + 1) * padded_xz + pz];
+            if h_a == SENTINEL_NO_SURFACE || h_b == SENTINEL_NO_SURFACE {
                 continue;
             }
-            let vals = [a_edge.0, a_edge.1, b_edge.0, b_edge.1];
+            let (a10, a11) = east_edge_pair(heights, padded_xz, px, pz);
+            let (b00, b01) = west_edge_pair(heights, padded_xz, px + 1, pz);
+            if (a10, a11) == (b00, b01) {
+                continue;
+            }
+            let vals = [a10, a11, b00, b01];
             let y_lo = *vals.iter().min().unwrap() as f32;
             let y_hi = *vals.iter().max().unwrap() as f32;
-            let a_max = a_edge.0.max(a_edge.1);
-            let b_max = b_edge.0.max(b_edge.1);
+            let a_max = a10.max(a11);
+            let b_max = b00.max(b01);
             let x = (px + 1) as f32;
             let (z1, z2) = (pz as f32, (pz + 1) as f32);
             emit_wall_x(out, x, y_lo, y_hi, z1, z2, a_max >= b_max);
         }
     }
     for px in 1..padded_xz - 1 {
-        for pz in 1..padded_xz - 2 {
-            let Some(a) = &tops[px * padded_xz + pz] else {
-                continue;
-            };
-            let Some(b) = &tops[px * padded_xz + pz + 1] else {
-                continue;
-            };
-            let ac = column_corners(a);
-            let bc = column_corners(b);
-            let a_edge = (ac[2], ac[3]);
-            let b_edge = (bc[0], bc[1]);
-            if a_edge == b_edge {
+        for pz in 1..padded_xz - 1 {
+            let h_a = heights[px * padded_xz + pz];
+            let h_b = heights[px * padded_xz + pz + 1];
+            if h_a == SENTINEL_NO_SURFACE || h_b == SENTINEL_NO_SURFACE {
                 continue;
             }
-            let vals = [a_edge.0, a_edge.1, b_edge.0, b_edge.1];
+            let (a01, a11) = south_edge_pair(heights, padded_xz, px, pz);
+            let (b00, b10) = north_edge_pair(heights, padded_xz, px, pz + 1);
+            if (a01, a11) == (b00, b10) {
+                continue;
+            }
+            let vals = [a01, a11, b00, b10];
             let y_lo = *vals.iter().min().unwrap() as f32;
             let y_hi = *vals.iter().max().unwrap() as f32;
-            let a_max = a_edge.0.max(a_edge.1);
-            let b_max = b_edge.0.max(b_edge.1);
+            let a_max = a01.max(a11);
+            let b_max = b00.max(b10);
             let z = (pz + 1) as f32;
             let (x1, x2) = (px as f32, (px + 1) as f32);
             emit_wall_z(out, z, y_lo, y_hi, x1, x2, a_max >= b_max);
         }
     }
+}
+
+/// Read a heights array with bounds-checked access. Returns `SENTINEL_NO_SURFACE`
+/// for out-of-bounds coordinates so `corner_rule` treats them as cliff neighbors.
+fn height_at(heights: &[i32], padded_xz: usize, x: i32, z: i32) -> i32 {
+    if x < 0 || z < 0 || x >= padded_xz as i32 || z >= padded_xz as i32 {
+        SENTINEL_NO_SURFACE
+    } else {
+        heights[(x as usize) * padded_xz + z as usize]
+    }
+}
+
+/// Corners on the east (+x) edge of column `(px, pz)`: `(c10, c11)`.
+fn east_edge_pair(heights: &[i32], padded_xz: usize, px: usize, pz: usize) -> (i32, i32) {
+    let own = heights[px * padded_xz + pz];
+    let (x, z) = (px as i32, pz as i32);
+    let c10 = corner_rule(
+        [
+            height_at(heights, padded_xz, x, z - 1),
+            height_at(heights, padded_xz, x + 1, z - 1),
+            own,
+            height_at(heights, padded_xz, x + 1, z),
+        ],
+        own,
+    );
+    let c11 = corner_rule(
+        [
+            own,
+            height_at(heights, padded_xz, x + 1, z),
+            height_at(heights, padded_xz, x, z + 1),
+            height_at(heights, padded_xz, x + 1, z + 1),
+        ],
+        own,
+    );
+    (c10, c11)
+}
+
+/// Corners on the west (-x) edge of column `(px, pz)`: `(c00, c01)`.
+fn west_edge_pair(heights: &[i32], padded_xz: usize, px: usize, pz: usize) -> (i32, i32) {
+    let own = heights[px * padded_xz + pz];
+    let (x, z) = (px as i32, pz as i32);
+    let c00 = corner_rule(
+        [
+            height_at(heights, padded_xz, x - 1, z - 1),
+            height_at(heights, padded_xz, x, z - 1),
+            height_at(heights, padded_xz, x - 1, z),
+            own,
+        ],
+        own,
+    );
+    let c01 = corner_rule(
+        [
+            height_at(heights, padded_xz, x - 1, z),
+            own,
+            height_at(heights, padded_xz, x - 1, z + 1),
+            height_at(heights, padded_xz, x, z + 1),
+        ],
+        own,
+    );
+    (c00, c01)
+}
+
+/// Corners on the south (+z) edge of column `(px, pz)`: `(c01, c11)`.
+fn south_edge_pair(heights: &[i32], padded_xz: usize, px: usize, pz: usize) -> (i32, i32) {
+    let own = heights[px * padded_xz + pz];
+    let (x, z) = (px as i32, pz as i32);
+    let c01 = corner_rule(
+        [
+            height_at(heights, padded_xz, x - 1, z),
+            own,
+            height_at(heights, padded_xz, x - 1, z + 1),
+            height_at(heights, padded_xz, x, z + 1),
+        ],
+        own,
+    );
+    let c11 = corner_rule(
+        [
+            own,
+            height_at(heights, padded_xz, x + 1, z),
+            height_at(heights, padded_xz, x, z + 1),
+            height_at(heights, padded_xz, x + 1, z + 1),
+        ],
+        own,
+    );
+    (c01, c11)
+}
+
+/// Corners on the north (-z) edge of column `(px, pz)`: `(c00, c10)`.
+fn north_edge_pair(heights: &[i32], padded_xz: usize, px: usize, pz: usize) -> (i32, i32) {
+    let own = heights[px * padded_xz + pz];
+    let (x, z) = (px as i32, pz as i32);
+    let c00 = corner_rule(
+        [
+            height_at(heights, padded_xz, x - 1, z - 1),
+            height_at(heights, padded_xz, x, z - 1),
+            height_at(heights, padded_xz, x - 1, z),
+            own,
+        ],
+        own,
+    );
+    let c10 = corner_rule(
+        [
+            height_at(heights, padded_xz, x, z - 1),
+            height_at(heights, padded_xz, x + 1, z - 1),
+            own,
+            height_at(heights, padded_xz, x + 1, z),
+        ],
+        own,
+    );
+    (c00, c10)
 }
 
 fn emit_wall_x(
