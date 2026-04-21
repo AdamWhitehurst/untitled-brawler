@@ -549,8 +549,10 @@ fn classify_edge_x(
         let hi_match = a11 == b01;
         match (lo_match, hi_match) {
             (true, true) => WallEmission::Skip,
+            // Flush at lo-z (a10 == b00); step at hi-z (a11 vs b01 differ).
             (true, false) => make_triangle_wall_x(px, pz, a10, a11, b01, true),
-            (false, true) => make_triangle_wall_x(px, pz, a10, b00, a11, false),
+            // Flush at hi-z (a11 == b01); step at lo-z (a10 vs b00 differ).
+            (false, true) => make_triangle_wall_x(px, pz, a11, a10, b00, false),
             (false, false) => WallEmission::Rectangle(WallRect {
                 axis: EdgeAxis::X,
                 base_px: px,
@@ -598,8 +600,10 @@ fn classify_edge_z(
         let hi_match = a11 == b10;
         match (lo_match, hi_match) {
             (true, true) => WallEmission::Skip,
+            // Flush at lo-x (a01 == b00); step at hi-x (a11 vs b10 differ).
             (true, false) => make_triangle_wall_z(px, pz, a01, a11, b10, true),
-            (false, true) => make_triangle_wall_z(px, pz, a01, b00, a11, false),
+            // Flush at hi-x (a11 == b10); step at lo-x (a01 vs b00 differ).
+            (false, true) => make_triangle_wall_z(px, pz, a11, a01, b00, false),
             (false, false) => WallEmission::Rectangle(WallRect {
                 axis: EdgeAxis::Z,
                 base_px: px,
@@ -1221,6 +1225,50 @@ mod tests {
         // Degenerate triangle (all colinear): area 0.
         let degenerate = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
         assert!(triangle_area(&degenerate) < MIN_PARRY_TRIANGLE_AREA);
+    }
+
+    #[test]
+    fn stepped_generator_all_chunks_no_degenerate_triangles() {
+        // Mesh every SteppedGenerator chunk that any fixture feature can occupy
+        // and verify no saddle-triangle debug_assert fires. This is a
+        // regression test for the Phase 4 (false, true) classifier branch
+        // swapping flush/step args and producing degenerate triangles.
+        use crate::config::VoxelGeneratorImpl;
+        use crate::terrain::SteppedGenerator;
+
+        let generator = SteppedGenerator {
+            chunk_size: 16,
+            shape: padded_shape(),
+        };
+        let shape = padded_shape();
+        for cy in -1..=0 {
+            for cz in -1..=1 {
+                for cx in -1..=1 {
+                    let voxels = generator.generate_terrain(IVec3::new(cx, cy, cz));
+                    // Will panic via debug_assert! if any saddle triangle is degenerate.
+                    let _ = mesh_chunk_sloped(&voxels, &shape);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn make_triangle_wall_x_produces_nondegenerate_triangles() {
+        // Both classifier branches must produce non-degenerate triangles.
+        // (true, false): flush at lo-z, step at hi-z. a10=b00=3, a11=5, b01=3.
+        let emission = make_triangle_wall_x(2, 5, 3, 5, 3, true);
+        if let WallEmission::Triangle { vertices } = emission {
+            assert!(triangle_area(&vertices) >= MIN_PARRY_TRIANGLE_AREA);
+        } else {
+            panic!("expected Triangle");
+        }
+        // (false, true): flush at hi-z, step at lo-z. a11=b01=3, a10=5, b00=3.
+        let emission = make_triangle_wall_x(2, 5, 3, 5, 3, false);
+        if let WallEmission::Triangle { vertices } = emission {
+            assert!(triangle_area(&vertices) >= MIN_PARRY_TRIANGLE_AREA);
+        } else {
+            panic!("expected Triangle");
+        }
     }
 
     #[test]
