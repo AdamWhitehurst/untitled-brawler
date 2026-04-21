@@ -460,6 +460,40 @@ struct WallRect {
     normal_positive: bool,
 }
 
+/// A 4-corner wall polygon. When `y_*_west` equals `y_*_east`, it's a
+/// rectangle; when they differ along the parallel axis, it's a tilted quad.
+/// Used to smooth out stepped wall profiles that trace a slope plane — for
+/// example, the south face of a staircase where each column has a different
+/// exposed height.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WallQuad {
+    axis: EdgeAxis,
+    base_px: usize,
+    base_pz: usize,
+    axis_len: usize,
+    y_lo_west: i32,
+    y_lo_east: i32,
+    y_hi_west: i32,
+    y_hi_east: i32,
+    normal_positive: bool,
+}
+
+impl From<WallRect> for WallQuad {
+    fn from(r: WallRect) -> Self {
+        WallQuad {
+            axis: r.axis,
+            base_px: r.base_px,
+            base_pz: r.base_pz,
+            axis_len: r.axis_len,
+            y_lo_west: r.y_lo,
+            y_lo_east: r.y_lo,
+            y_hi_west: r.y_hi,
+            y_hi_east: r.y_hi,
+            normal_positive: r.normal_positive,
+        }
+    }
+}
+
 enum WallEmission {
     Skip,
     /// Saddle edge: one end flush, the other stepped. 3 vertices, flat normal.
@@ -523,8 +557,8 @@ fn emit_walls(heights: &[i32], surface_heights: &[i32], padded_xz: usize, out: &
         }
     }
 
-    for merged in greedy_merge_rectangle_walls(rects) {
-        emit_wall_rect(&merged, out);
+    for quad in merge_walls_with_tilt(rects) {
+        emit_wall_quad(&quad, out);
     }
 }
 
@@ -679,111 +713,140 @@ fn make_triangle_wall_z(
 /// Greedy-merge adjacent rectangles sharing `(axis, perp, y_lo, y_hi,
 /// normal_positive)` along their parallel axis. Triangular saddle walls are
 /// NOT merged (v1).
-fn greedy_merge_rectangle_walls(rects: Vec<WallRect>) -> Vec<WallRect> {
+/// Merge adjacent wall rectangles into `WallQuad`s. When consecutive rects
+/// along the parallel axis form a linear gradient in `y_lo` or `y_hi`, emit a
+/// tilted quad that connects the run's west and east endpoints. Constant runs
+/// emit as rectangles (all 4 corners at matching y). This produces smooth
+/// diagonal wall faces along staircase-like terrain.
+fn merge_walls_with_tilt(rects: Vec<WallRect>) -> Vec<WallQuad> {
     use std::collections::BTreeMap;
-    // Key: (axis, perp coord, y_lo, y_hi, normal). Value: Vec<(parallel_start, len)>.
-    let mut groups: BTreeMap<(EdgeAxis, usize, i32, i32, bool), Vec<(usize, usize)>> =
-        BTreeMap::new();
+    let mut groups: BTreeMap<(EdgeAxis, usize, bool), Vec<WallRect>> = BTreeMap::new();
     for r in rects {
-        let (perp, parallel) = match r.axis {
-            EdgeAxis::X => (r.base_px, r.base_pz),
-            EdgeAxis::Z => (r.base_pz, r.base_px),
+        let perp = match r.axis {
+            EdgeAxis::X => r.base_px,
+            EdgeAxis::Z => r.base_pz,
         };
-        let key = (r.axis, perp, r.y_lo, r.y_hi, r.normal_positive);
-        groups.entry(key).or_default().push((parallel, r.axis_len));
+        groups
+            .entry((r.axis, perp, r.normal_positive))
+            .or_default()
+            .push(r);
     }
 
-    let mut merged = Vec::new();
-    for ((axis, perp, y_lo, y_hi, normal_positive), mut entries) in groups {
-        entries.sort_by_key(|&(start, _)| start);
-        let mut current: Option<(usize, usize)> = None;
-        for (start, len) in entries {
-            match current {
-                None => current = Some((start, len)),
-                Some((c_start, c_len)) if c_start + c_len == start => {
-                    current = Some((c_start, c_len + len));
+    let mut out = Vec::new();
+    for (_, mut group) in groups {
+        group.sort_by_key(|r| match r.axis {
+            EdgeAxis::X => r.base_pz,
+            EdgeAxis::Z => r.base_px,
+        });
+
+        let mut run: Option<WallQuad> = None;
+        let mut gradient: Option<(i32, i32)> = None; // (delta_y_lo, delta_y_hi) per unit
+
+        for rect in group {
+            let parallel_start = match rect.axis {
+                EdgeAxis::X => rect.base_pz,
+                EdgeAxis::Z => rect.base_px,
+            };
+            let rect_quad = WallQuad::from(rect);
+
+            match &mut run {
+                None => {
+                    run = Some(rect_quad);
+                    gradient = None;
                 }
-                Some((c_start, c_len)) => {
-                    merged.push(make_merged_rect(
-                        axis,
-                        perp,
-                        c_start,
-                        c_len,
-                        y_lo,
-                        y_hi,
-                        normal_positive,
-                    ));
-                    current = Some((start, len));
+                Some(r) => {
+                    let r_end = match r.axis {
+                        EdgeAxis::X => r.base_pz + r.axis_len,
+                        EdgeAxis::Z => r.base_px + r.axis_len,
+                    };
+                    let adjacent = r_end == parallel_start;
+                    if !adjacent {
+                        out.push(*r);
+                        run = Some(rect_quad);
+                        gradient = None;
+                        continue;
+                    }
+                    // Delta at the shared boundary from r's east to rect's west.
+                    let delta_lo = rect.y_lo - r.y_lo_east;
+                    let delta_hi = rect.y_hi - r.y_hi_east;
+                    let rect_len = rect.axis_len as i32;
+                    // For the run-internal gradient to match, both:
+                    //   (a) this rect's own internal spans must be gradient-0
+                    //       (which is always true since input rects are
+                    //       constant), AND
+                    //   (b) the transition delta must match the established
+                    //       gradient (scaled to whatever rect_len is).
+                    // Since classify_edge emits axis_len=1 rects, this
+                    // simplifies: the transition delta IS the per-unit
+                    // gradient.
+                    debug_assert_eq!(
+                        rect_len, 1,
+                        "merge_walls_with_tilt expects 1-unit input rects"
+                    );
+                    match gradient {
+                        None => {
+                            // First transition; sets the run's gradient.
+                            gradient = Some((delta_lo, delta_hi));
+                            r.axis_len += rect.axis_len;
+                            r.y_lo_east = rect.y_lo;
+                            r.y_hi_east = rect.y_hi;
+                        }
+                        Some((g_lo, g_hi)) => {
+                            if delta_lo == g_lo && delta_hi == g_hi {
+                                r.axis_len += rect.axis_len;
+                                r.y_lo_east = rect.y_lo;
+                                r.y_hi_east = rect.y_hi;
+                            } else {
+                                out.push(*r);
+                                run = Some(rect_quad);
+                                gradient = None;
+                            }
+                        }
+                    }
                 }
             }
         }
-        if let Some((s, l)) = current {
-            merged.push(make_merged_rect(
-                axis,
-                perp,
-                s,
-                l,
-                y_lo,
-                y_hi,
-                normal_positive,
-            ));
+        if let Some(r) = run {
+            out.push(r);
         }
     }
-    merged
+    out
 }
 
-fn make_merged_rect(
-    axis: EdgeAxis,
-    perp: usize,
-    parallel_start: usize,
-    axis_len: usize,
-    y_lo: i32,
-    y_hi: i32,
-    normal_positive: bool,
-) -> WallRect {
-    let (base_px, base_pz) = match axis {
-        EdgeAxis::X => (perp, parallel_start),
-        EdgeAxis::Z => (parallel_start, perp),
-    };
-    WallRect {
-        axis,
-        base_px,
-        base_pz,
-        axis_len,
-        y_lo,
-        y_hi,
-        normal_positive,
-    }
-}
-
-fn emit_wall_rect(r: &WallRect, out: &mut MeshBuffers) {
-    match r.axis {
+fn emit_wall_quad(q: &WallQuad, out: &mut MeshBuffers) {
+    match q.axis {
         EdgeAxis::X => {
-            let x = (r.base_px + 1) as f32;
-            let z1 = r.base_pz as f32;
-            let z2 = (r.base_pz + r.axis_len) as f32;
-            emit_wall_x(
+            let x = (q.base_px + 1) as f32;
+            let z1 = q.base_pz as f32;
+            let z2 = (q.base_pz + q.axis_len) as f32;
+            // For +x edge: parallel axis is Z. "West" = low z, "east" = high z.
+            emit_wall_x_quad(
                 out,
                 x,
-                r.y_lo as f32,
-                r.y_hi as f32,
+                q.y_lo_west as f32,
+                q.y_hi_west as f32,
+                q.y_lo_east as f32,
+                q.y_hi_east as f32,
                 z1,
                 z2,
-                r.normal_positive,
+                q.normal_positive,
             );
         }
         EdgeAxis::Z => {
-            let z = (r.base_pz + 1) as f32;
-            let x1 = r.base_px as f32;
-            let x2 = (r.base_px + r.axis_len) as f32;
-            emit_wall_z(
+            let z = (q.base_pz + 1) as f32;
+            let x1 = q.base_px as f32;
+            let x2 = (q.base_px + q.axis_len) as f32;
+            // For +z edge: parallel axis is X. "West" = low x, "east" = high x.
+            emit_wall_z_quad(
                 out,
                 z,
-                r.y_lo as f32,
-                r.y_hi as f32,
+                q.y_lo_west as f32,
+                q.y_hi_west as f32,
+                q.y_lo_east as f32,
+                q.y_hi_east as f32,
                 x1,
                 x2,
-                r.normal_positive,
+                q.normal_positive,
             );
         }
     }
@@ -899,32 +962,42 @@ fn north_edge_pair(heights: &[i32], padded_xz: usize, px: usize, pz: usize) -> (
     (c00, c10)
 }
 
-fn emit_wall_x(
+/// Emit a wall on the `+x`/`-x` plane at `x`, with potentially-different y
+/// values at each z endpoint (`z1` = west/low-z, `z2` = east/high-z). When
+/// `y_*_west == y_*_east`, this degenerates to a rectangle. Otherwise it's a
+/// tilted quad that smooths stepped profiles. Normals are computed per-
+/// triangle from positions so tilt is reflected correctly.
+fn emit_wall_x_quad(
     out: &mut MeshBuffers,
     x: f32,
-    y_lo: f32,
-    y_hi: f32,
+    y_lo_west: f32,
+    y_hi_west: f32,
+    y_lo_east: f32,
+    y_hi_east: f32,
     z1: f32,
     z2: f32,
     normal_positive: bool,
 ) {
-    if y_hi <= y_lo {
+    if y_hi_west <= y_lo_west && y_hi_east <= y_lo_east {
         return;
     }
-    let p0 = [x, y_lo, z1];
-    let p1 = [x, y_hi, z1];
-    let p2 = [x, y_lo, z2];
-    let p3 = [x, y_hi, z2];
-    let normal = if normal_positive {
-        [1.0, 0.0, 0.0]
-    } else {
-        [-1.0, 0.0, 0.0]
-    };
+    let p0 = [x, y_lo_west, z1];
+    let p1 = [x, y_hi_west, z1];
+    let p2 = [x, y_lo_east, z2];
+    let p3 = [x, y_hi_east, z2];
     let base = out.positions.len() as u32;
     out.positions.extend_from_slice(&[p0, p1, p2, p3]);
-    out.normals.extend_from_slice(&[normal; 4]);
-    out.uvs
-        .extend_from_slice(&[[z1, y_lo], [z1, y_hi], [z2, y_lo], [z2, y_hi]]);
+    let n0 = triangle_normal_from_indices(&[p0, p1, p2, p3], 0, 1, 2, normal_positive);
+    let n1 = triangle_normal_from_indices(&[p0, p1, p2, p3], 1, 3, 2, normal_positive);
+    // Shared vertices get averaged normals for smooth shading on the tilt.
+    out.normals
+        .extend_from_slice(&[n0, average_normal(n0, n1), average_normal(n0, n1), n1]);
+    out.uvs.extend_from_slice(&[
+        [z1, y_lo_west],
+        [z1, y_hi_west],
+        [z2, y_lo_east],
+        [z2, y_hi_east],
+    ]);
     if normal_positive {
         out.indices
             .extend_from_slice(&[base, base + 1, base + 2, base + 1, base + 3, base + 2]);
@@ -934,32 +1007,38 @@ fn emit_wall_x(
     }
 }
 
-fn emit_wall_z(
+/// Mirror of [`emit_wall_x_quad`] for walls on the `+z`/`-z` plane at `z`,
+/// where y values may vary along x (`x1` = west, `x2` = east).
+fn emit_wall_z_quad(
     out: &mut MeshBuffers,
     z: f32,
-    y_lo: f32,
-    y_hi: f32,
+    y_lo_west: f32,
+    y_hi_west: f32,
+    y_lo_east: f32,
+    y_hi_east: f32,
     x1: f32,
     x2: f32,
     normal_positive: bool,
 ) {
-    if y_hi <= y_lo {
+    if y_hi_west <= y_lo_west && y_hi_east <= y_lo_east {
         return;
     }
-    let p0 = [x1, y_lo, z];
-    let p1 = [x1, y_hi, z];
-    let p2 = [x2, y_lo, z];
-    let p3 = [x2, y_hi, z];
-    let normal = if normal_positive {
-        [0.0, 0.0, 1.0]
-    } else {
-        [0.0, 0.0, -1.0]
-    };
+    let p0 = [x1, y_lo_west, z];
+    let p1 = [x1, y_hi_west, z];
+    let p2 = [x2, y_lo_east, z];
+    let p3 = [x2, y_hi_east, z];
     let base = out.positions.len() as u32;
     out.positions.extend_from_slice(&[p0, p1, p2, p3]);
-    out.normals.extend_from_slice(&[normal; 4]);
-    out.uvs
-        .extend_from_slice(&[[x1, y_lo], [x1, y_hi], [x2, y_lo], [x2, y_hi]]);
+    let n0 = triangle_normal_from_indices(&[p0, p1, p2, p3], 0, 2, 1, normal_positive);
+    let n1 = triangle_normal_from_indices(&[p0, p1, p2, p3], 2, 3, 1, normal_positive);
+    out.normals
+        .extend_from_slice(&[n0, average_normal(n0, n1), average_normal(n0, n1), n1]);
+    out.uvs.extend_from_slice(&[
+        [x1, y_lo_west],
+        [x1, y_hi_west],
+        [x2, y_lo_east],
+        [x2, y_hi_east],
+    ]);
     if normal_positive {
         out.indices
             .extend_from_slice(&[base, base + 2, base + 1, base + 2, base + 3, base + 1]);
@@ -967,6 +1046,36 @@ fn emit_wall_z(
         out.indices
             .extend_from_slice(&[base, base + 1, base + 2, base + 1, base + 3, base + 2]);
     }
+}
+
+fn triangle_normal_from_indices(
+    positions: &[[f32; 3]; 4],
+    i0: usize,
+    i1: usize,
+    i2: usize,
+    normal_positive: bool,
+) -> [f32; 3] {
+    let v0 = Vec3::from(positions[i0]);
+    let v1 = Vec3::from(positions[i1]);
+    let v2 = Vec3::from(positions[i2]);
+    let mut n = (v1 - v0).cross(v2 - v0).normalize_or_zero();
+    if !normal_positive {
+        n = -n;
+    }
+    // The ordering passed from the caller already encodes normal direction;
+    // negate above only reverses when the caller passed a "-x/-z" wall.
+    // Re-assert: if n is near-zero (degenerate), fall back to axis-aligned.
+    if n.length_squared() < 1e-6 {
+        return [0.0, 1.0, 0.0];
+    }
+    n.to_array()
+}
+
+fn average_normal(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    Vec3::from(a)
+        .midpoint(Vec3::from(b))
+        .normalize_or_zero()
+        .to_array()
 }
 
 /// Emit per-voxel cubic bottom faces where a solid voxel sits above an
@@ -1225,6 +1334,124 @@ mod tests {
         // Degenerate triangle (all colinear): area 0.
         let degenerate = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
         assert!(triangle_area(&degenerate) < MIN_PARRY_TRIANGLE_AREA);
+    }
+
+    #[test]
+    fn merge_walls_with_tilt_combines_arithmetic_progression() {
+        // 6 consecutive 1-unit +z-axis walls with y_hi stepping 4..9 should
+        // merge into ONE WallQuad with tilted y_hi from 4 (west) to 9 (east).
+        let mut rects = Vec::new();
+        for i in 0..6 {
+            rects.push(WallRect {
+                axis: EdgeAxis::Z,
+                base_px: 11 + i,
+                base_pz: 5,
+                axis_len: 1,
+                y_lo: 2,
+                y_hi: 4 + i as i32,
+                normal_positive: true,
+            });
+        }
+        let merged = merge_walls_with_tilt(rects);
+        assert_eq!(
+            merged.len(),
+            1,
+            "expected 1 merged quad, got {}",
+            merged.len()
+        );
+        let q = merged[0];
+        assert_eq!(q.axis, EdgeAxis::Z);
+        assert_eq!(q.base_px, 11);
+        assert_eq!(q.base_pz, 5);
+        assert_eq!(q.axis_len, 6);
+        assert_eq!(q.y_lo_west, 2);
+        assert_eq!(q.y_lo_east, 2);
+        assert_eq!(q.y_hi_west, 4);
+        assert_eq!(q.y_hi_east, 9);
+    }
+
+    #[test]
+    fn staircase_south_face_emits_tilted_wall_not_stepped() {
+        // A staircase of height h(x) = x.clamp(0, 7) terminating at z=4 has a
+        // south face whose top edge forms an arithmetic progression. The
+        // tilted-wall merger should consolidate the per-column rectangles
+        // into a single quad with varying y along the parallel axis — i.e.,
+        // the south face's top edge is NOT horizontal at any discrete y.
+        use crate::config::VoxelGeneratorImpl;
+        use crate::terrain::SteppedGenerator;
+
+        let generator = SteppedGenerator {
+            chunk_size: 16,
+            shape: padded_shape(),
+        };
+        let voxels = generator.generate_terrain(IVec3::new(-1, 0, 0));
+        let shape = padded_shape();
+        let mesh = mesh_chunk_sloped(&voxels, &shape).expect("mesh");
+        let positions = mesh
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .unwrap()
+            .as_float3()
+            .unwrap();
+        // A smooth tilted wall at the south face (mesh z=6) has endpoint
+        // vertices at (first_x, y_first) and (last_x, y_last) with different
+        // y values. Before Option B, every step had its own rect with
+        // constant y, producing stepped cubic walls. After Option B, adjacent
+        // rects with gradient=1 merge — we should see at most 1 top-edge
+        // vertex per gradient run, not 6.
+        // A vertex at exactly the west-top and east-top of the tilted wall
+        // quad: (11, 4, 6) and (17, 9, 6).
+        let has_pos = |target: [f32; 3]| {
+            positions.iter().any(|p| {
+                (p[0] - target[0]).abs() < 0.01
+                    && (p[1] - target[1]).abs() < 0.01
+                    && (p[2] - target[2]).abs() < 0.01
+            })
+        };
+        assert!(
+            has_pos([11.0, 4.0, 6.0]),
+            "tilted south wall should have west-top at (11, 4, 6)"
+        );
+        assert!(
+            has_pos([17.0, 9.0, 6.0]),
+            "tilted south wall should have east-top at (17, 9, 6)"
+        );
+    }
+
+    #[test]
+    fn stepped_generator_staircase_has_continuous_ramp_positions() {
+        // The main slope rect should have 4 corners at the extremes of the
+        // staircase x-range. Intermediate integer y-values (3, 4, 5, 6, 7, 8)
+        // should NOT appear as vertex positions — if they do, the slope is
+        // being emitted per-column (step mesh), not as one merged ramp.
+        use crate::config::VoxelGeneratorImpl;
+        use crate::terrain::SteppedGenerator;
+
+        let generator = SteppedGenerator {
+            chunk_size: 16,
+            shape: padded_shape(),
+        };
+        let voxels = generator.generate_terrain(IVec3::new(-1, 0, 0));
+        let shape = padded_shape();
+        let mesh = mesh_chunk_sloped(&voxels, &shape).expect("mesh");
+        let positions = mesh
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .unwrap()
+            .as_float3()
+            .unwrap();
+        // Expect the main slope rect's 4 corners.
+        let has_pos = |target: [f32; 3]| {
+            positions.iter().any(|p| {
+                (p[0] - target[0]).abs() < 0.01
+                    && (p[1] - target[1]).abs() < 0.01
+                    && (p[2] - target[2]).abs() < 0.01
+            })
+        };
+        // The merged rect in chunk mesh coords: px_min=9, px_max=15,
+        // pz_min=1, pz_max=4. x1=9, x2=16, z1=1, z2=5. y range 2..9.
+        assert!(has_pos([9.0, 2.0, 1.0]), "main rect p00 missing");
+        assert!(has_pos([16.0, 9.0, 1.0]), "main rect p10 missing");
+        assert!(has_pos([16.0, 9.0, 5.0]), "main rect p11 missing");
+        assert!(has_pos([9.0, 2.0, 5.0]), "main rect p01 missing");
     }
 
     #[test]
