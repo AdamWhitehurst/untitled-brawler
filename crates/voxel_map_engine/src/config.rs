@@ -110,6 +110,16 @@ impl MapDimensions {
     }
 }
 
+/// Selects the chunk meshing algorithm for a map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
+pub enum MeshingMode {
+    /// Axis-aligned greedy quads via `block-mesh-rs`. Stepped surfaces.
+    #[default]
+    Cubic,
+    /// Corner-max sloped meshing. Single-unit elevation changes become 45° faces.
+    Sloped,
+}
+
 /// Runtime configuration for a map instance.
 ///
 /// Holds state that varies per-run (seed, save directory) or per-deployment
@@ -126,6 +136,8 @@ pub struct VoxelMapConfig {
     /// Whether this map generates chunks locally. Server sets `true`, client sets `false`
     /// when chunks are streamed from the server.
     pub generates_chunks: bool,
+    /// Meshing algorithm. Defaults to `Cubic` via `MeshingMode::default`.
+    pub meshing_mode: MeshingMode,
 }
 
 impl VoxelMapConfig {
@@ -145,6 +157,13 @@ impl VoxelMapConfig {
             spawning_distance,
             save_dir: None,
             generates_chunks,
+            meshing_mode: MeshingMode::default(),
         }
+    }
+
+    /// Builder: set meshing mode (default `Cubic`).
+    pub fn with_meshing_mode(mut self, mode: MeshingMode) -> Self {
+        self.meshing_mode = mode;
+        self
     }
 }

@@ -6,7 +6,7 @@ use bevy::tasks::{AsyncComputeTaskPool, Task};
 use ndshape::{RuntimeShape, Shape};
 
 use crate::config::{SurfaceHeightMap, VoxelGenerator, VoxelGeneratorImpl, WorldObjectSpawn};
-use crate::meshing::mesh_chunk_greedy;
+use crate::meshing::{MeshingMode, mesh_chunk};
 use crate::palette::PalettedChunk;
 use crate::persistence::fs_chunk::FsChunkStore;
 use crate::persistence::fs_chunk_entities::FsChunkEntitiesStore;
@@ -48,6 +48,7 @@ pub fn spawn_terrain_batch(
     shape: RuntimeShape<u32, 3>,
     chunk_store: Option<FsChunkStore>,
     entity_store: Option<FsChunkEntitiesStore>,
+    mode: MeshingMode,
 ) {
     let generator = Arc::clone(&generator.0);
     let pool = AsyncComputeTaskPool::get();
@@ -70,7 +71,7 @@ pub fn spawn_terrain_batch(
                                     chunk_data.voxels.to_voxels()
                                 };
                                 let _span = info_span!("mesh_chunk").entered();
-                                mesh_chunk_greedy(&voxels, &shape)
+                                mesh_chunk(&voxels, &shape, mode)
                             };
                             let entity_spawns = load_chunk_entities_from_store(&entity_store, pos);
                             return ChunkGenResult {
@@ -139,6 +140,7 @@ pub fn spawn_mesh_task(
     position: IVec3,
     voxels: Vec<WorldVoxel>,
     shape: RuntimeShape<u32, 3>,
+    mode: MeshingMode,
 ) {
     let pool = AsyncComputeTaskPool::get();
 
@@ -146,7 +148,7 @@ pub fn spawn_mesh_task(
         let _span = info_span!("mesh_stage", ?position).entered();
         let mesh = {
             let _span = info_span!("mesh_chunk").entered();
-            mesh_chunk_greedy(&voxels, &shape)
+            mesh_chunk(&voxels, &shape, mode)
         };
         let chunk_data = {
             let _span = info_span!("palettize_chunk").entered();

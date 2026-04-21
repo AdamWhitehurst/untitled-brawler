@@ -509,6 +509,62 @@ impl VoxelGeneratorImpl for FlatGenerator {
     }
 }
 
+/// Deterministic fixture for verifying sloped meshing.
+///
+/// Emits a surface with:
+/// - staircase strip (1D slope test) in x=-8..=-1
+/// - 3x3 pyramid (hip corners) centered at (0, 0) in world coords
+/// - cross-shaped depression (valley corners) at (8, 0)
+/// - saddle (two diagonal peaks and two low corners) at (0, 8)
+/// - multi-unit cliff (Δ≥2 stays cubic) at (-8, 8)
+pub struct SteppedGenerator {
+    pub chunk_size: u32,
+    pub shape: RuntimeShape<u32, 3>,
+}
+
+impl VoxelGeneratorImpl for SteppedGenerator {
+    fn generate_terrain(&self, chunk_pos: IVec3) -> Vec<WorldVoxel> {
+        let mut voxels = vec![WorldVoxel::Air; self.shape.usize()];
+        for i in 0..self.shape.size() {
+            let [px, py, pz] = self.shape.delinearize(i);
+            let world_x = chunk_pos.x * self.chunk_size as i32 + px as i32 - 1;
+            let world_y = chunk_pos.y * self.chunk_size as i32 + py as i32 - 1;
+            let world_z = chunk_pos.z * self.chunk_size as i32 + pz as i32 - 1;
+            let h = stepped_surface_height(world_x, world_z);
+            if world_y <= h {
+                voxels[i as usize] = WorldVoxel::Solid(0);
+            }
+        }
+        voxels
+    }
+}
+
+/// Height function for [`SteppedGenerator`]. Kept free-standing so tests
+/// can exercise expected heights without materializing a full chunk.
+fn stepped_surface_height(x: i32, z: i32) -> i32 {
+    // Staircase: rises 1 per unit in `x` for x ∈ -8..=-1 at z ∈ -4..=4
+    if (-8..=-1).contains(&x) && (-4..=4).contains(&z) {
+        return x + 8;
+    }
+    // Pyramid centered at (0, 0): concentric diamond rings
+    if (-3..=3).contains(&x) && (-3..=3).contains(&z) {
+        return 3 - x.abs().max(z.abs());
+    }
+    // Cross depression centered at (8, 0): dig down in cardinal arms
+    if (x, z) == (8, 0) || ((5..=11).contains(&x) && z == 0) || (x == 8 && (-3..=3).contains(&z)) {
+        return -1;
+    }
+    // Saddle centered at (0, 8): two high corners, two low corners
+    if (-2..=2).contains(&x) && (6..=10).contains(&z) {
+        return if (x > 0) == (z > 8) { 1 } else { 0 };
+    }
+    // Multi-unit cliff at x ∈ [-11, -9], z ∈ [6, 10] (Δ=3, should stay cubic)
+    if (-11..=-9).contains(&x) && (6..=10).contains(&z) {
+        return 3;
+    }
+    0
+}
+
 /// Build a [`VoxelGenerator`] from terrain components passed directly.
 ///
 /// Used by spawn functions that read the def before components have been

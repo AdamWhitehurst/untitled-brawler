@@ -14,7 +14,7 @@ use crate::generation::{
     spawn_features_task, spawn_mesh_task, spawn_terrain_batch,
 };
 use crate::instance::VoxelMapInstance;
-use crate::meshing::mesh_chunk_greedy;
+use crate::meshing::{MeshingMode, mesh_chunk};
 use crate::persistence::ChunkFileEnvelope;
 use crate::persistence::fs_chunk::FsChunkStore;
 use crate::persistence::fs_chunk_entities::FsChunkEntitiesStore;
@@ -393,6 +393,7 @@ pub(crate) fn update_chunks(
                 &budget,
                 entity_store,
                 chunk_store,
+                config.meshing_mode,
             );
         }
 
@@ -622,8 +623,10 @@ fn drain_gen_queue(
     budget: &ChunkWorkBudget,
     entity_store: Option<&FsChunkEntitiesStore>,
     chunk_store: Option<&FsChunkStore>,
+    meshing_mode: MeshingMode,
 ) {
     let _span = info_span!("drain_gen_queue").entered();
+    trace!("drain_gen_queue: meshing_mode={:?}", meshing_mode);
 
     plot!("gen_queue_depth", gen_queue.heap.len() as f64);
 
@@ -694,6 +697,7 @@ fn drain_gen_queue(
                         instance.shape.clone(),
                         chunk_store.cloned(),
                         entity_store.cloned(),
+                        meshing_mode,
                     );
                     terrain_batch = Vec::with_capacity(GEN_BATCH_SIZE);
                 }
@@ -740,7 +744,13 @@ fn drain_gen_queue(
                     .voxels
                     .to_voxels();
                 tracker.generating.insert(work.position);
-                spawn_mesh_task(pending, work.position, voxels, instance.shape.clone());
+                spawn_mesh_task(
+                    pending,
+                    work.position,
+                    voxels,
+                    instance.shape.clone(),
+                    meshing_mode,
+                );
                 spawned += 1;
             }
             ChunkStatus::Full => {
@@ -762,6 +772,7 @@ fn drain_gen_queue(
             instance.shape.clone(),
             chunk_store.cloned(),
             entity_store.cloned(),
+            meshing_mode,
         );
     }
 
@@ -1023,10 +1034,12 @@ pub fn spawn_remesh_tasks(
         &ChunkWorkBudget,
         &TicketLevelPropagator,
         &mut ChunkWorkTracker,
+        &VoxelMapConfig,
     )>,
 ) {
     let pool = AsyncComputeTaskPool::get();
-    for (mut instance, mut pending, budget, propagator, mut tracker) in &mut map_query {
+    for (mut instance, mut pending, budget, propagator, mut tracker, config) in &mut map_query {
+        let mode = config.meshing_mode;
         if pending.tasks.len() >= MAX_PENDING_REMESH_TASKS {
             plot!(
                 "remesh_spawn_stop_reason",
@@ -1082,7 +1095,11 @@ pub fn spawn_remesh_tasks(
                 chunk_data.voxels.to_voxels()
             };
             let shape = instance.shape.clone();
-            let task = pool.spawn(async move { mesh_chunk_greedy(&voxels, &shape) });
+            let task = pool.spawn(async move { mesh_chunk(&voxels, &shape, mode) });
+            trace!(
+                "spawn_remesh_tasks: chunk {:?} dispatched with meshing_mode={:?}",
+                work.position, mode
+            );
             pending.tasks.push(RemeshTask {
                 chunk_pos: work.position,
                 task,

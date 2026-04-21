@@ -5,7 +5,28 @@ use bevy::prelude::*;
 use block_mesh::{GreedyQuadsBuffer, RIGHT_HANDED_Y_UP_CONFIG, greedy_quads};
 use ndshape::Shape;
 
+pub use crate::config::MeshingMode;
 use crate::types::WorldVoxel;
+
+/// Mesh a padded voxel array using the selected algorithm.
+pub fn mesh_chunk<S: Shape<3, Coord = u32>>(
+    voxels: &[WorldVoxel],
+    shape: &S,
+    mode: MeshingMode,
+) -> Option<Mesh> {
+    match mode {
+        MeshingMode::Cubic => mesh_chunk_greedy(voxels, shape),
+        MeshingMode::Sloped => mesh_chunk_sloped(voxels, shape),
+    }
+}
+
+/// Slope-aware mesher. Phase 1: delegates to greedy (stub for plumbing).
+pub fn mesh_chunk_sloped<S: Shape<3, Coord = u32>>(
+    voxels: &[WorldVoxel],
+    shape: &S,
+) -> Option<Mesh> {
+    mesh_chunk_greedy(voxels, shape)
+}
 
 /// Mesh a padded voxel array into a Bevy Mesh using greedy quads.
 /// `shape` describes the padded chunk dimensions; `voxels.len()` must equal `shape.usize()`.
