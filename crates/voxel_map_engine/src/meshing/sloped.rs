@@ -198,6 +198,16 @@ fn compute_corners(
     [c00, c10, c01, c11]
 }
 
+/// Valley-aware corner rule.
+///
+/// - `delta == 0`: flat → corner = `own_h`.
+/// - `delta == 1`: single-unit transition.
+///     - Isolated pit (own is min AND appears only once): corner = `own_h`.
+///       Keeps a single-cell valley at its floor height.
+///     - Otherwise (peak, peak-adjacent, slope, multi-cell pit edge): corner = `max`.
+///       Rises to meet the higher neighbor / tip.
+/// - `delta >= 2`: cliff → corner = `own_h`.
+/// - SENTINEL neighbor (no surface in that column): treat as cliff → `own_h`.
 fn corner_rule(values: [i32; 4], own_h: i32) -> i32 {
     if values.iter().any(|&v| v == SENTINEL_NO_SURFACE) {
         return own_h;
@@ -206,7 +216,14 @@ fn corner_rule(values: [i32; 4], own_h: i32) -> i32 {
     let min = *values.iter().min().unwrap();
     match max - min {
         0 => own_h,
-        1 => max,
+        1 => {
+            let own_count = values.iter().filter(|&&v| v == own_h).count();
+            if own_h == min && own_count == 1 {
+                own_h
+            } else {
+                max
+            }
+        }
         _ => own_h,
     }
 }
@@ -819,6 +836,28 @@ mod tests {
             diag_tilted,
             normals.len()
         );
+    }
+
+    #[test]
+    fn corner_rule_preserves_isolated_pit() {
+        // Isolated pit: own=2 surrounded by 3 neighbors at 3. Keep own (valley).
+        assert_eq!(corner_rule([3, 3, 3, 2], 2), 2);
+        // Staircase slope east corner: own=3 with 2x max=4. Rise to meet.
+        assert_eq!(corner_rule([3, 4, 3, 4], 3), 4);
+        // Staircase slope west corner: own=3 with min=2, max=3. Stay at max (=own).
+        assert_eq!(corner_rule([2, 3, 2, 3], 3), 3);
+        // Peak: own=2 with 3 lower neighbors. own is max → stay.
+        assert_eq!(corner_rule([1, 1, 1, 2], 2), 2);
+        // Pyramid edge diagonal: own=4 with 3 same + 1 tip at 5. Hip ridge → rise.
+        assert_eq!(corner_rule([5, 4, 4, 4], 4), 5);
+        // Multi-cell pit edge: own=2 with 2x non-pit at 3. Slope up (ramp into pit).
+        assert_eq!(corner_rule([2, 3, 2, 3], 2), 3);
+        // Flat: all same. No change.
+        assert_eq!(corner_rule([5, 5, 5, 5], 5), 5);
+        // Cliff: delta >= 2. Keep own.
+        assert_eq!(corner_rule([5, 2, 5, 2], 2), 2);
+        // SENTINEL neighbor: cliff-like. Keep own.
+        assert_eq!(corner_rule([SENTINEL_NO_SURFACE, 3, 3, 3], 3), 3);
     }
 
     #[test]
