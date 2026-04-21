@@ -604,4 +604,45 @@ mod tests {
             positions.len()
         );
     }
+
+    #[test]
+    fn stepped_generator_chunk_emits_tilted_normals() {
+        use crate::config::VoxelGeneratorImpl;
+        use crate::terrain::SteppedGenerator;
+
+        let generator = SteppedGenerator {
+            chunk_size: 16,
+            shape: padded_shape(),
+        };
+        let voxels = generator.generate_terrain(IVec3::new(-1, 0, 0));
+        let shape = padded_shape();
+        let mesh = mesh_chunk_sloped(&voxels, &shape).expect("mesh");
+        let normals = mesh
+            .attribute(Mesh::ATTRIBUTE_NORMAL)
+            .unwrap()
+            .as_float3()
+            .unwrap();
+        let positions = mesh
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .unwrap()
+            .as_float3()
+            .unwrap();
+        let tilted = normals
+            .iter()
+            .filter(|n| n[0].abs() > 0.1 && n[1].abs() > 0.1 && n[1].abs() < 0.99)
+            .count();
+        // Heuristic: slope normals should be 45° — y component around 0.707.
+        let slope_45 = normals
+            .iter()
+            .filter(|n| (n[1] - 0.7071).abs() < 0.01)
+            .count();
+        assert!(
+            tilted > 0 && slope_45 > 0,
+            "staircase chunk should emit 45° tilted normals — got tilted={} slope_45={} total_normals={} total_positions={}",
+            tilted,
+            slope_45,
+            normals.len(),
+            positions.len()
+        );
+    }
 }
