@@ -77,13 +77,14 @@ pub fn mesh_chunk_sloped<S: Shape<3, Coord = u32>>(
     debug_assert_eq!(dims[0], dims[2], "padded XZ must be square");
 
     let heights = column_heights(voxels, shape);
+    let surface_heights = column_surface_heights(voxels, shape);
     let materials = column_materials(voxels, shape);
     let tops = classify_columns(&heights, &materials, padded_xz);
 
     let mut buf = MeshBuffers::new();
     emit_planar_tops(&tops, padded_xz, &mut buf);
     emit_nonplanar_tops(&tops, padded_xz, &mut buf);
-    emit_cubic_walls_simple(&heights, padded_xz, &mut buf);
+    emit_cubic_walls_simple(&heights, &surface_heights, padded_xz, &mut buf);
     emit_bottom_faces(voxels, shape, &mut buf);
 
     if buf.is_empty() {
@@ -95,7 +96,8 @@ pub fn mesh_chunk_sloped<S: Shape<3, Coord = u32>>(
 
 /// Pass 1: scan each padded XZ column for the top-face-y of the highest
 /// interior solid voxel whose above neighbor is non-solid. Returns
-/// `SENTINEL_NO_SURFACE` when no such voxel exists.
+/// `SENTINEL_NO_SURFACE` when no such voxel exists. Used for top emission —
+/// this chunk only renders tops it OWNS (solid voxel in its own interior).
 fn column_heights<S: Shape<3, Coord = u32>>(voxels: &[WorldVoxel], shape: &S) -> Vec<i32> {
     let dims = shape.as_array();
     let (sx, sy, sz) = (dims[0], dims[1], dims[2]);
@@ -103,6 +105,35 @@ fn column_heights<S: Shape<3, Coord = u32>>(voxels: &[WorldVoxel], shape: &S) ->
     for px in 0..sx {
         for pz in 0..sz {
             for py in (1..=sy - 2).rev() {
+                let idx = shape.linearize([px, py, pz]) as usize;
+                if !matches!(voxels[idx], WorldVoxel::Solid(_)) {
+                    continue;
+                }
+                let above_idx = shape.linearize([px, py + 1, pz]) as usize;
+                if matches!(voxels[above_idx], WorldVoxel::Solid(_)) {
+                    break;
+                }
+                heights[(px * sz + pz) as usize] = (py + 1) as i32;
+                break;
+            }
+        }
+    }
+    heights
+}
+
+/// Like [`column_heights`] but also considers the bottom padding voxel
+/// (`py = 0`). For a depression whose floor voxel lives in the chunk BELOW,
+/// that chunk's top is visible in our padding row — so surrounding columns
+/// in THIS chunk need a wall down to that level. The chunk below still owns
+/// the top face (which is why top emission keeps using `column_heights`);
+/// this array is only consulted by the wall emitter.
+fn column_surface_heights<S: Shape<3, Coord = u32>>(voxels: &[WorldVoxel], shape: &S) -> Vec<i32> {
+    let dims = shape.as_array();
+    let (sx, sy, sz) = (dims[0], dims[1], dims[2]);
+    let mut heights = vec![SENTINEL_NO_SURFACE; (sx * sz) as usize];
+    for px in 0..sx {
+        for pz in 0..sz {
+            for py in (0..=sy - 2).rev() {
                 let idx = shape.linearize([px, py, pz]) as usize;
                 if !matches!(voxels[idx], WorldVoxel::Solid(_)) {
                     continue;
@@ -410,55 +441,122 @@ fn push_triangle(out: &mut MeshBuffers, a: [f32; 3], b: [f32; 3], c: [f32; 3]) {
 
 /// Phase-2 placeholder wall emitter. For each shared edge at an interior-to-
 /// interior or interior-to-border boundary (+x and +z directions only —
-/// neighbor chunks own their own east/south boundaries, avoiding duplicates),
-/// if the corner y-values along the edge disagree, emit an axis-aligned wall
-/// rectangle spanning `[min, max]` of those corners. Saddle edges (mixed
-/// direction) are approximated by a single rect — Phase 4 replaces this with
-/// a proper split.
-fn emit_cubic_walls_simple(heights: &[i32], padded_xz: usize, out: &mut MeshBuffers) {
+/// neighbor chunks own their own east/south boundaries, avoiding duplicates):
+///
+/// - Both columns have interior-owned tops (`heights` non-SENTINEL): use the
+///   corner rule on `heights`; emit a wall iff corners disagree (handles
+///   slopes/cliffs and preserves slope continuity).
+/// - Exactly one side's top lives in padding (pit with floor in the chunk
+///   below — `heights == SENTINEL` but `surface_heights` valid on the pit
+///   side): emit a simple axis wall from `surface_lo` to `surface_hi`. The
+///   corner rule can't detect these because it pulls corners to `max` on both
+///   sides, hiding the 1-unit gap.
+///
+/// Saddle edges (mixed-direction corner agreement) are approximated by a
+/// single rect in v1 — Phase 4 replaces this with a proper split.
+fn emit_cubic_walls_simple(
+    heights: &[i32],
+    surface_heights: &[i32],
+    padded_xz: usize,
+    out: &mut MeshBuffers,
+) {
     for pz in 1..padded_xz - 1 {
         for px in 1..padded_xz - 1 {
-            let h_a = heights[px * padded_xz + pz];
-            let h_b = heights[(px + 1) * padded_xz + pz];
-            if h_a == SENTINEL_NO_SURFACE || h_b == SENTINEL_NO_SURFACE {
+            let wall = classify_wall_x(heights, surface_heights, padded_xz, px, pz);
+            let Some((y_lo, y_hi, a_taller)) = wall else {
                 continue;
-            }
-            let (a10, a11) = east_edge_pair(heights, padded_xz, px, pz);
-            let (b00, b01) = west_edge_pair(heights, padded_xz, px + 1, pz);
-            if (a10, a11) == (b00, b01) {
-                continue;
-            }
-            let vals = [a10, a11, b00, b01];
-            let y_lo = *vals.iter().min().unwrap() as f32;
-            let y_hi = *vals.iter().max().unwrap() as f32;
-            let a_max = a10.max(a11);
-            let b_max = b00.max(b01);
+            };
             let x = (px + 1) as f32;
             let (z1, z2) = (pz as f32, (pz + 1) as f32);
-            emit_wall_x(out, x, y_lo, y_hi, z1, z2, a_max >= b_max);
+            emit_wall_x(out, x, y_lo, y_hi, z1, z2, a_taller);
         }
     }
     for px in 1..padded_xz - 1 {
         for pz in 1..padded_xz - 1 {
-            let h_a = heights[px * padded_xz + pz];
-            let h_b = heights[px * padded_xz + pz + 1];
-            if h_a == SENTINEL_NO_SURFACE || h_b == SENTINEL_NO_SURFACE {
+            let wall = classify_wall_z(heights, surface_heights, padded_xz, px, pz);
+            let Some((y_lo, y_hi, a_taller)) = wall else {
                 continue;
-            }
-            let (a01, a11) = south_edge_pair(heights, padded_xz, px, pz);
-            let (b00, b10) = north_edge_pair(heights, padded_xz, px, pz + 1);
-            if (a01, a11) == (b00, b10) {
-                continue;
-            }
-            let vals = [a01, a11, b00, b10];
-            let y_lo = *vals.iter().min().unwrap() as f32;
-            let y_hi = *vals.iter().max().unwrap() as f32;
-            let a_max = a01.max(a11);
-            let b_max = b00.max(b10);
+            };
             let z = (pz + 1) as f32;
             let (x1, x2) = (px as f32, (px + 1) as f32);
-            emit_wall_z(out, z, y_lo, y_hi, x1, x2, a_max >= b_max);
+            emit_wall_z(out, z, y_lo, y_hi, x1, x2, a_taller);
         }
+    }
+}
+
+/// Decide whether a wall is needed on the +x edge between columns A `(px, pz)`
+/// and B `(px + 1, pz)`. Returns `(y_lo, y_hi, a_taller)` when emit is needed.
+fn classify_wall_x(
+    heights: &[i32],
+    surface_heights: &[i32],
+    padded_xz: usize,
+    px: usize,
+    pz: usize,
+) -> Option<(f32, f32, bool)> {
+    let top_a = heights[px * padded_xz + pz];
+    let top_b = heights[(px + 1) * padded_xz + pz];
+    let surf_a = surface_heights[px * padded_xz + pz];
+    let surf_b = surface_heights[(px + 1) * padded_xz + pz];
+    if surf_a == SENTINEL_NO_SURFACE || surf_b == SENTINEL_NO_SURFACE {
+        return None;
+    }
+    if top_a != SENTINEL_NO_SURFACE && top_b != SENTINEL_NO_SURFACE {
+        let (a10, a11) = east_edge_pair(heights, padded_xz, px, pz);
+        let (b00, b01) = west_edge_pair(heights, padded_xz, px + 1, pz);
+        if (a10, a11) == (b00, b01) {
+            return None;
+        }
+        let vals = [a10, a11, b00, b01];
+        let y_lo = *vals.iter().min().unwrap() as f32;
+        let y_hi = *vals.iter().max().unwrap() as f32;
+        let a_taller = a10.max(a11) >= b00.max(b01);
+        Some((y_lo, y_hi, a_taller))
+    } else {
+        // Pit case: at least one side has its top in the padding row below.
+        // Corner rule smooths it away, so fall back to raw surface-height diff.
+        if surf_a == surf_b {
+            return None;
+        }
+        let y_lo = surf_a.min(surf_b) as f32;
+        let y_hi = surf_a.max(surf_b) as f32;
+        Some((y_lo, y_hi, surf_a >= surf_b))
+    }
+}
+
+/// Mirror of [`classify_wall_x`] for the +z edge between columns A `(px, pz)`
+/// and B `(px, pz + 1)`.
+fn classify_wall_z(
+    heights: &[i32],
+    surface_heights: &[i32],
+    padded_xz: usize,
+    px: usize,
+    pz: usize,
+) -> Option<(f32, f32, bool)> {
+    let top_a = heights[px * padded_xz + pz];
+    let top_b = heights[px * padded_xz + pz + 1];
+    let surf_a = surface_heights[px * padded_xz + pz];
+    let surf_b = surface_heights[px * padded_xz + pz + 1];
+    if surf_a == SENTINEL_NO_SURFACE || surf_b == SENTINEL_NO_SURFACE {
+        return None;
+    }
+    if top_a != SENTINEL_NO_SURFACE && top_b != SENTINEL_NO_SURFACE {
+        let (a01, a11) = south_edge_pair(heights, padded_xz, px, pz);
+        let (b00, b10) = north_edge_pair(heights, padded_xz, px, pz + 1);
+        if (a01, a11) == (b00, b10) {
+            return None;
+        }
+        let vals = [a01, a11, b00, b10];
+        let y_lo = *vals.iter().min().unwrap() as f32;
+        let y_hi = *vals.iter().max().unwrap() as f32;
+        let a_taller = a01.max(a11) >= b00.max(b10);
+        Some((y_lo, y_hi, a_taller))
+    } else {
+        if surf_a == surf_b {
+            return None;
+        }
+        let y_lo = surf_a.min(surf_b) as f32;
+        let y_hi = surf_a.max(surf_b) as f32;
+        Some((y_lo, y_hi, surf_a >= surf_b))
     }
 }
 
@@ -858,6 +956,45 @@ mod tests {
         assert_eq!(corner_rule([5, 2, 5, 2], 2), 2);
         // SENTINEL neighbor: cliff-like. Keep own.
         assert_eq!(corner_rule([SENTINEL_NO_SURFACE, 3, 3, 3], 3), 3);
+    }
+
+    #[test]
+    fn cross_chunk_pit_emits_lip_walls() {
+        // Voxels: cross-shaped pit at the bottom of the padded box. Pit cells
+        // are solid only at py=0 (padding row, simulating "neighbor chunk
+        // owns the pit floor"). Surrounding cells are solid at py=0 AND py=1
+        // (full ground at world_y=0 in their chunk). Our chunk has interior
+        // top at py=1 for non-pit cells, no interior top for pit cells.
+        let shape = padded_shape();
+        let mut voxels = vec![WorldVoxel::Air; shape.usize()];
+        let pit_cells = |x: i32, z: i32| (x, z) == (8, 8) || x == 8 && (6..=10).contains(&z);
+        for i in 0..shape.size() {
+            let [px, py, pz] = shape.delinearize(i);
+            let world_x = px as i32 - 1;
+            let world_y = py as i32 - 1;
+            let world_z = pz as i32 - 1;
+            let h = if pit_cells(world_x, world_z) { -1 } else { 0 };
+            if world_y <= h {
+                voxels[i as usize] = WorldVoxel::Solid(0);
+            }
+        }
+        let mesh = mesh_chunk_sloped(&voxels, &shape).expect("mesh");
+        let normals = mesh
+            .attribute(Mesh::ATTRIBUTE_NORMAL)
+            .unwrap()
+            .as_float3()
+            .unwrap();
+        // Lip walls have horizontal normals (y == 0, x or z != 0).
+        let horizontal_walls = normals
+            .iter()
+            .filter(|n| n[1].abs() < 0.01 && (n[0].abs() > 0.9 || n[2].abs() > 0.9))
+            .count();
+        assert!(
+            horizontal_walls > 0,
+            "expected horizontal lip walls around pit, got {} of {} normals",
+            horizontal_walls,
+            normals.len(),
+        );
     }
 
     #[test]
