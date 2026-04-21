@@ -85,7 +85,7 @@ pub fn mesh_chunk_sloped<S: Shape<3, Coord = u32>>(
     let mut buf = MeshBuffers::new();
     emit_planar_tops(&tops, padded_xz, &mut buf);
     emit_nonplanar_tops(&tops, padded_xz, &mut buf);
-    emit_walls(&heights, &surface_heights, &tops, padded_xz, &mut buf);
+    emit_walls(&surface_heights, &tops, padded_xz, &mut buf);
     emit_bottom_faces(voxels, shape, &mut buf);
 
     if buf.is_empty() {
@@ -185,6 +185,55 @@ fn column_materials<S: Shape<3, Coord = u32>>(voxels: &[WorldVoxel], shape: &S) 
 /// it as part of the slope (rather than as an individual hip wedge)
 /// produces a continuous ramp. Walls at the cliff side still emit via
 /// `classify_edge_*`, filling the drop to the flat.
+/// Return the 4 raw heights feeding `corner_rule` for mesh corner `corner_idx`
+/// of column `(px, pz)`. `corner_idx` ∈ [0, 4) in order `[c00, c10, c01, c11]`.
+/// Out-of-range (x, z) sample as `SENTINEL_NO_SURFACE` so SENTINEL propagation
+/// matches `compute_corners`.
+fn corner_neighborhood_heights(
+    heights: &[i32],
+    padded_xz: usize,
+    px: usize,
+    pz: usize,
+    corner_idx: usize,
+) -> [i32; 4] {
+    let (dx, dz) = match corner_idx {
+        0 => (-1i32, -1),
+        1 => (1, -1),
+        2 => (-1, 1),
+        3 => (1, 1),
+        _ => unreachable!("corner_idx must be 0..4"),
+    };
+    let sample = |x: i32, z: i32| -> i32 {
+        if x < 0 || z < 0 || x as usize >= padded_xz || z as usize >= padded_xz {
+            SENTINEL_NO_SURFACE
+        } else {
+            heights[x as usize * padded_xz + z as usize]
+        }
+    };
+    let px_i = px as i32;
+    let pz_i = pz as i32;
+    [
+        sample(px_i, pz_i),
+        sample(px_i + dx, pz_i),
+        sample(px_i, pz_i + dz),
+        sample(px_i + dx, pz_i + dz),
+    ]
+}
+
+/// A corner was pulled to `own_h` by the cliff branch of `corner_rule` iff its
+/// 2×2 neighborhood has `max - min ≥ 2` OR contains a SENTINEL. These corners
+/// are safe to lift onto a slope plane during extension; `max`-pulled hip
+/// ridges (delta = 1 with `own_h == min`, count ≠ 1) and isolated-pit floors
+/// are not.
+fn corner_is_cliff_pulled(values: [i32; 4]) -> bool {
+    if values.iter().any(|&v| v == SENTINEL_NO_SURFACE) {
+        return true;
+    }
+    let max = *values.iter().max().unwrap();
+    let min = *values.iter().min().unwrap();
+    max - min >= 2
+}
+
 fn extend_slopes_over_nonplanar(
     tops: &mut Vec<Option<ColumnTop>>,
     heights: &[i32],
@@ -194,18 +243,18 @@ fn extend_slopes_over_nonplanar(
         let mut changed = false;
         for px in 1..padded_xz - 1 {
             for pz in 1..padded_xz - 1 {
-                let is_nonplanar =
-                    matches!(tops[px * padded_xz + pz], Some(ColumnTop::NonPlanar { .. }));
-                if !is_nonplanar {
-                    continue;
-                }
-                let own_h = heights[px * padded_xz + pz];
-                let material = match tops[px * padded_xz + pz] {
-                    Some(ColumnTop::NonPlanar { material, .. }) => material,
+                let (np_corners, material) = match tops[px * padded_xz + pz] {
+                    Some(ColumnTop::NonPlanar { corners, material }) => (corners, material),
                     _ => continue,
                 };
-                // Check 4 cardinal neighbors for a Planar slope whose plane
-                // passes through own_h at (px, pz).
+                // For each of 4 cardinal neighbors with a Planar slope plane,
+                // count how many of this NonPlanar col's corners match the
+                // plane's y at the corresponding mesh position. Adopt the
+                // plane only if the mismatched corners were cliff-pulled to
+                // `own_h` by `corner_rule` (2×2 delta ≥ 2). Other mismatches
+                // are hip ridges (`max`-pulled) or isolated-pit floors, which
+                // must not be overwritten or the slope extension erases
+                // pyramid/saddle hip wedges.
                 let mut adopt: Option<(i32, i32, i32)> = None;
                 for (dx, dz) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
                     let nx = px as i32 + dx;
@@ -227,19 +276,32 @@ fn extend_slopes_over_nonplanar(
                     if n_mat != material {
                         continue;
                     }
-                    // Only extend SLOPES, not flat planes — extending a flat
-                    // plane into a NonPlanar column would erase the hip
-                    // wedge that visually represents the corner-max
-                    // raised-corner shape (pyramid edges, etc.).
                     if gx == 0 && gz == 0 {
+                        // Flat planes don't extend into NonPlanar cols
+                        // (would erase pyramid hip wedges).
                         continue;
                     }
-                    let plane_y_here = gx * px as i32 + gz * pz as i32 + intercept;
-                    if plane_y_here != own_h {
-                        continue;
+                    let px_i = px as i32;
+                    let pz_i = pz as i32;
+                    let plane_corners = [
+                        gx * px_i + gz * pz_i + intercept,
+                        gx * (px_i + 1) + gz * pz_i + intercept,
+                        gx * px_i + gz * (pz_i + 1) + intercept,
+                        gx * (px_i + 1) + gz * (pz_i + 1) + intercept,
+                    ];
+                    let matches = (0..4)
+                        .filter(|&i| np_corners[i] == plane_corners[i])
+                        .count();
+                    let mismatches_are_cliff_pulled = (0..4).all(|i| {
+                        np_corners[i] == plane_corners[i]
+                            || corner_is_cliff_pulled(corner_neighborhood_heights(
+                                heights, padded_xz, px, pz, i,
+                            ))
+                    });
+                    if matches >= 3 && mismatches_are_cliff_pulled {
+                        adopt = Some((gx, gz, intercept));
+                        break;
                     }
-                    adopt = Some((gx, gz, intercept));
-                    break;
                 }
                 if let Some((gx, gz, intercept)) = adopt {
                     let px_i = px as i32;
@@ -538,7 +600,11 @@ enum EdgeAxis {
     Z,
 }
 
-/// Axis-aligned rectangular wall. `axis_len` spans the parallel axis in cells.
+/// Trapezoidal wall segment between two adjacent columns, sized from the
+/// columns' classified corner heights at the two endpoints of the shared
+/// mesh edge (not raw column heights). `axis_len` spans the parallel axis in
+/// cells. When `y_lo_west == y_hi_west` or `y_lo_east == y_hi_east`, one
+/// endpoint is a single point — the wall degenerates to a triangle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct WallRect {
     axis: EdgeAxis,
@@ -548,14 +614,11 @@ struct WallRect {
     base_px: usize,
     base_pz: usize,
     axis_len: usize,
-    y_lo: i32,
-    y_hi: i32,
+    y_lo_west: i32,
+    y_hi_west: i32,
+    y_lo_east: i32,
+    y_hi_east: i32,
     normal_positive: bool,
-    /// The taller column's Planar plane `(gx, gz, intercept)`, if the taller
-    /// col is on a Planar slope. Used by the tilt merger so that merged
-    /// tilted quads follow the plane's exact gradient (not a linear
-    /// interpolation between rect endpoints that doesn't match the slope).
-    taller_plane: Option<(i32, i32, i32)>,
 }
 
 /// A 4-corner wall polygon. When `y_*_west` equals `y_*_east`, it's a
@@ -583,35 +646,18 @@ impl From<WallRect> for WallQuad {
             base_px: r.base_px,
             base_pz: r.base_pz,
             axis_len: r.axis_len,
-            y_lo_west: r.y_lo,
-            y_lo_east: r.y_lo,
-            y_hi_west: r.y_hi,
-            y_hi_east: r.y_hi,
+            y_lo_west: r.y_lo_west,
+            y_lo_east: r.y_lo_east,
+            y_hi_west: r.y_hi_west,
+            y_hi_east: r.y_hi_east,
             normal_positive: r.normal_positive,
         }
     }
 }
 
-#[allow(dead_code)] // `Triangle` retained for future saddle-wall support
 enum WallEmission {
     Skip,
-    /// Saddle edge (no longer emitted; kept for future re-introduction if a
-    /// corner rule emerges that produces true 1-mismatch saddles).
-    Triangle {
-        vertices: [[f32; 3]; 3],
-    },
     Rectangle(WallRect),
-}
-
-/// Avian/Parry rejects trimesh triangles below this surface area (≈ 1e-4).
-/// Assert we never emit degenerate saddle triangles — they'd silently corrupt
-/// the server collider.
-const MIN_PARRY_TRIANGLE_AREA: f32 = 1e-4;
-
-fn triangle_area(v: &[[f32; 3]; 3]) -> f32 {
-    let ab = Vec3::from(v[1]) - Vec3::from(v[0]);
-    let ac = Vec3::from(v[2]) - Vec3::from(v[0]);
-    ab.cross(ac).length() * 0.5
 }
 
 /// Phase-4 wall emitter. Iterates +x and +z shared edges (one-sided, so
@@ -620,7 +666,6 @@ fn triangle_area(v: &[[f32; 3]; 3]) -> f32 {
 /// emit immediately; rectangles are collected and greedy-merged along their
 /// parallel axis before emission.
 fn emit_walls(
-    heights: &[i32],
     surface_heights: &[i32],
     tops: &[Option<ColumnTop>],
     padded_xz: usize,
@@ -630,34 +675,16 @@ fn emit_walls(
 
     for pz in 1..padded_xz - 1 {
         for px in 1..padded_xz - 1 {
-            match classify_edge_x(heights, surface_heights, tops, padded_xz, px, pz) {
+            match classify_edge_x(surface_heights, tops, padded_xz, px, pz) {
                 WallEmission::Skip => {}
-                WallEmission::Triangle { vertices } => {
-                    debug_assert!(
-                        triangle_area(&vertices) >= MIN_PARRY_TRIANGLE_AREA,
-                        "saddle triangle at ({}, {}) axis=X below Parry tolerance",
-                        px,
-                        pz,
-                    );
-                    push_triangle(out, vertices[0], vertices[1], vertices[2]);
-                }
                 WallEmission::Rectangle(rect) => rects.push(rect),
             }
         }
     }
     for px in 1..padded_xz - 1 {
         for pz in 1..padded_xz - 1 {
-            match classify_edge_z(heights, surface_heights, tops, padded_xz, px, pz) {
+            match classify_edge_z(surface_heights, tops, padded_xz, px, pz) {
                 WallEmission::Skip => {}
-                WallEmission::Triangle { vertices } => {
-                    debug_assert!(
-                        triangle_area(&vertices) >= MIN_PARRY_TRIANGLE_AREA,
-                        "saddle triangle at ({}, {}) axis=Z below Parry tolerance",
-                        px,
-                        pz,
-                    );
-                    push_triangle(out, vertices[0], vertices[1], vertices[2]);
-                }
                 WallEmission::Rectangle(rect) => rects.push(rect),
             }
         }
@@ -669,197 +696,120 @@ fn emit_walls(
 }
 
 fn classify_edge_x(
-    heights: &[i32],
     surface_heights: &[i32],
     tops: &[Option<ColumnTop>],
     padded_xz: usize,
     px: usize,
     pz: usize,
 ) -> WallEmission {
-    classify_edge_by_own_heights(
-        heights[px * padded_xz + pz],
-        heights[(px + 1) * padded_xz + pz],
-        surface_heights[px * padded_xz + pz],
-        surface_heights[(px + 1) * padded_xz + pz],
-        &tops[px * padded_xz + pz],
-        &tops[(px + 1) * padded_xz + pz],
-        EdgeAxis::X,
-        px,
-        pz,
-    )
-}
-
-fn classify_edge_z(
-    heights: &[i32],
-    surface_heights: &[i32],
-    tops: &[Option<ColumnTop>],
-    padded_xz: usize,
-    px: usize,
-    pz: usize,
-) -> WallEmission {
-    classify_edge_by_own_heights(
-        heights[px * padded_xz + pz],
-        heights[px * padded_xz + pz + 1],
-        surface_heights[px * padded_xz + pz],
-        surface_heights[px * padded_xz + pz + 1],
-        &tops[px * padded_xz + pz],
-        &tops[px * padded_xz + pz + 1],
-        EdgeAxis::Z,
-        px,
-        pz,
-    )
-}
-
-/// Emit a wall rectangle sized from the two columns' OWN top-face-y values.
-/// Also captures the taller column's Planar-slope plane so the tilt merger
-/// can later use the plane's exact gradient for merged quad endpoints —
-/// otherwise a linear interpolation between first/last rect y_hi values
-/// would produce a slope-mismatched gradient and visible gaps at the
-/// slope's south edge.
-fn classify_edge_by_own_heights(
-    top_a: i32,
-    top_b: i32,
-    surf_a: i32,
-    surf_b: i32,
-    top_cls_a: &Option<ColumnTop>,
-    top_cls_b: &Option<ColumnTop>,
-    axis: EdgeAxis,
-    px: usize,
-    pz: usize,
-) -> WallEmission {
+    let surf_a = surface_heights[px * padded_xz + pz];
+    let surf_b = surface_heights[(px + 1) * padded_xz + pz];
     if surf_a == SENTINEL_NO_SURFACE || surf_b == SENTINEL_NO_SURFACE {
         return WallEmission::Skip;
     }
-    let h_a = if top_a != SENTINEL_NO_SURFACE {
-        top_a
-    } else {
-        surf_a
-    };
-    let h_b = if top_b != SENTINEL_NO_SURFACE {
-        top_b
-    } else {
-        surf_b
-    };
-    if h_a == h_b {
+    let ca = column_corners_or_flat(&tops[px * padded_xz + pz], surf_a);
+    let cb = column_corners_or_flat(&tops[(px + 1) * padded_xz + pz], surf_b);
+    // +x shared edge: mesh x = px+1, running from (px+1, pz) to (px+1, pz+1).
+    // a.c10 at (px+1, pz), a.c11 at (px+1, pz+1).
+    // b.c00 at (px+1, pz), b.c01 at (px+1, pz+1).
+    classify_edge_from_corners(EdgeAxis::X, px, pz, ca[1], ca[3], cb[0], cb[2])
+}
+
+fn classify_edge_z(
+    surface_heights: &[i32],
+    tops: &[Option<ColumnTop>],
+    padded_xz: usize,
+    px: usize,
+    pz: usize,
+) -> WallEmission {
+    let surf_a = surface_heights[px * padded_xz + pz];
+    let surf_b = surface_heights[px * padded_xz + pz + 1];
+    if surf_a == SENTINEL_NO_SURFACE || surf_b == SENTINEL_NO_SURFACE {
         return WallEmission::Skip;
     }
-    let taller_plane = if h_a >= h_b {
-        extract_slope_plane(top_cls_a)
-    } else {
-        extract_slope_plane(top_cls_b)
-    };
+    let ca = column_corners_or_flat(&tops[px * padded_xz + pz], surf_a);
+    let cb = column_corners_or_flat(&tops[px * padded_xz + pz + 1], surf_b);
+    // +z shared edge: mesh z = pz+1, running from (px, pz+1) to (px+1, pz+1).
+    // a.c01 at (px, pz+1), a.c11 at (px+1, pz+1).
+    // b.c00 at (px, pz+1), b.c10 at (px+1, pz+1).
+    classify_edge_from_corners(EdgeAxis::Z, px, pz, ca[2], ca[3], cb[0], cb[1])
+}
+
+/// Corner-aware edge classification. `a_w`/`a_e` are `a`'s corner heights at
+/// the west/east endpoints of the shared edge; `b_w`/`b_e` are `b`'s at the
+/// same endpoints. Emits `Skip` when the two columns' top surfaces mate along
+/// the full edge (no cliff), otherwise a `WallRect` whose four y values are
+/// `min`/`max` of each endpoint. A truly-triangular cliff (one endpoint
+/// matches, the other has a drop) is represented by equal y_lo/y_hi on the
+/// matching side — emission handles the degenerate case.
+fn classify_edge_from_corners(
+    axis: EdgeAxis,
+    px: usize,
+    pz: usize,
+    a_w: i32,
+    a_e: i32,
+    b_w: i32,
+    b_e: i32,
+) -> WallEmission {
+    if a_w == b_w && a_e == b_e {
+        return WallEmission::Skip;
+    }
+    let normal_positive = if a_w != b_w { a_w > b_w } else { a_e > b_e };
     WallEmission::Rectangle(WallRect {
         axis,
         base_px: px,
         base_pz: pz,
         axis_len: 1,
-        y_lo: h_a.min(h_b),
-        y_hi: h_a.max(h_b),
-        normal_positive: h_a >= h_b,
-        taller_plane,
+        y_lo_west: a_w.min(b_w),
+        y_hi_west: a_w.max(b_w),
+        y_lo_east: a_e.min(b_e),
+        y_hi_east: a_e.max(b_e),
+        normal_positive,
     })
 }
 
-/// Extract a non-flat Planar plane from a `ColumnTop`, or None for flat/NonPlanar.
-fn extract_slope_plane(top: &Option<ColumnTop>) -> Option<(i32, i32, i32)> {
+/// Return a column's 4 corner heights, or `[surf; 4]` when the column has no
+/// classified top (SENTINEL top but a below-padding surface is visible).
+fn column_corners_or_flat(top: &Option<ColumnTop>, surf: i32) -> [i32; 4] {
     match top {
-        Some(ColumnTop::Planar {
-            gradient_x,
-            gradient_z,
-            intercept,
-            ..
-        }) if *gradient_x != 0 || *gradient_z != 0 => Some((*gradient_x, *gradient_z, *intercept)),
-        _ => None,
+        Some(ColumnTop::Planar { corners, .. }) | Some(ColumnTop::NonPlanar { corners, .. }) => {
+            *corners
+        }
+        None => [surf, surf, surf, surf],
     }
 }
 
-/// Build a saddle triangle for a +x edge. `step_high_z` = true means the
-/// stepped end is at z=pz+1 (low-z end is flush).
-fn make_triangle_wall_x(
-    px: usize,
-    pz: usize,
-    flush_y: i32,
-    step_a: i32,
-    step_b: i32,
-    step_high_z: bool,
-) -> WallEmission {
-    let x = (px + 1) as f32;
-    let (flush_z, step_z) = if step_high_z {
-        (pz as f32, (pz + 1) as f32)
-    } else {
-        ((pz + 1) as f32, pz as f32)
-    };
-    let v_flush = [x, flush_y as f32, flush_z];
-    let v_step_a = [x, step_a as f32, step_z];
-    let v_step_b = [x, step_b as f32, step_z];
-    WallEmission::Triangle {
-        vertices: [v_flush, v_step_a, v_step_b],
-    }
-}
-
-fn make_triangle_wall_z(
-    px: usize,
-    pz: usize,
-    flush_y: i32,
-    step_a: i32,
-    step_b: i32,
-    step_high_x: bool,
-) -> WallEmission {
-    let z = (pz + 1) as f32;
-    let (flush_x, step_x) = if step_high_x {
-        (px as f32, (px + 1) as f32)
-    } else {
-        ((px + 1) as f32, px as f32)
-    };
-    let v_flush = [flush_x, flush_y as f32, z];
-    let v_step_a = [step_x, step_a as f32, z];
-    let v_step_b = [step_x, step_b as f32, z];
-    WallEmission::Triangle {
-        vertices: [v_flush, v_step_a, v_step_b],
-    }
-}
-
-/// Greedy-merge adjacent rectangles sharing `(axis, perp, y_lo, y_hi,
-/// normal_positive)` along their parallel axis. Triangular saddle walls are
-/// NOT merged (v1).
-/// Merge adjacent wall rectangles into `WallQuad`s. When consecutive rects
-/// along the parallel axis form a linear gradient in `y_lo` or `y_hi`, emit a
-/// tilted quad that connects the run's west and east endpoints. Constant runs
-/// emit as rectangles (all 4 corners at matching y). This produces smooth
-/// diagonal wall faces along staircase-like terrain.
+/// Merge adjacent `WallRect`s into `WallQuad`s. Consecutive 1-unit rects along
+/// the parallel axis merge when (a) they're continuous at the shared seam
+/// (east endpoint of one equals west endpoint of the next), and (b) their
+/// west→east gradient in both `y_lo` and `y_hi` matches the run's existing
+/// gradient — so the combined polyline is a straight edge renderable as one
+/// linear quad. Each rect's four corners already track the slope-plane
+/// endpoints exactly (since corners come from the classified `tops[]`),
+/// so no post-hoc plane correction is needed.
 fn merge_walls_with_tilt(rects: Vec<WallRect>) -> Vec<WallQuad> {
     use std::collections::BTreeMap;
-    // Group by taller_plane too — rects on the same slope plane can merge
-    // with plane-derived endpoints; rects with different planes (or no plane)
-    // emit separately so the merged quad's top edge follows the slope exactly
-    // at the plane boundary.
-    let mut groups: BTreeMap<(EdgeAxis, usize, bool, Option<(i32, i32, i32)>), Vec<WallRect>> =
-        BTreeMap::new();
+    let mut groups: BTreeMap<(EdgeAxis, usize, bool), Vec<WallRect>> = BTreeMap::new();
     for r in rects {
         let perp = match r.axis {
             EdgeAxis::X => r.base_px,
             EdgeAxis::Z => r.base_pz,
         };
         groups
-            .entry((r.axis, perp, r.normal_positive, r.taller_plane))
+            .entry((r.axis, perp, r.normal_positive))
             .or_default()
             .push(r);
     }
 
     let mut out = Vec::new();
-    for ((_axis, _perp, _normal, taller_plane), mut group) in groups {
+    for ((_axis, _perp, _normal), mut group) in groups {
         group.sort_by_key(|r| match r.axis {
             EdgeAxis::X => r.base_pz,
             EdgeAxis::Z => r.base_px,
         });
 
         let mut run: Option<WallQuad> = None;
-        let mut gradient: Option<(i32, i32)> = None; // (delta_y_lo, delta_y_hi) per unit
-
-        let emit = |out: &mut Vec<WallQuad>, q: WallQuad| {
-            let final_quad = apply_slope_plane_to_quad(q, taller_plane);
-            out.push(final_quad);
-        };
+        let mut gradient: Option<(i32, i32)> = None;
 
         for rect in group {
             let parallel_start = match rect.axis {
@@ -867,84 +817,44 @@ fn merge_walls_with_tilt(rects: Vec<WallRect>) -> Vec<WallQuad> {
                 EdgeAxis::Z => rect.base_px,
             };
             let rect_quad = WallQuad::from(rect);
+            debug_assert_eq!(
+                rect.axis_len, 1,
+                "merge_walls_with_tilt expects 1-unit input rects"
+            );
+            let rect_delta_lo = rect.y_lo_east - rect.y_lo_west;
+            let rect_delta_hi = rect.y_hi_east - rect.y_hi_west;
 
             match &mut run {
                 None => {
                     run = Some(rect_quad);
-                    gradient = None;
+                    gradient = Some((rect_delta_lo, rect_delta_hi));
                 }
                 Some(r) => {
                     let r_end = match r.axis {
                         EdgeAxis::X => r.base_pz + r.axis_len,
                         EdgeAxis::Z => r.base_px + r.axis_len,
                     };
-                    let adjacent = r_end == parallel_start;
-                    if !adjacent {
-                        emit(&mut out, *r);
+                    let continuous = r_end == parallel_start
+                        && r.y_lo_east == rect.y_lo_west
+                        && r.y_hi_east == rect.y_hi_west;
+                    let (g_lo, g_hi) = gradient.expect("gradient set alongside run");
+                    if continuous && rect_delta_lo == g_lo && rect_delta_hi == g_hi {
+                        r.axis_len += rect.axis_len;
+                        r.y_lo_east = rect.y_lo_east;
+                        r.y_hi_east = rect.y_hi_east;
+                    } else {
+                        out.push(*r);
                         run = Some(rect_quad);
-                        gradient = None;
-                        continue;
-                    }
-                    let delta_lo = rect.y_lo - r.y_lo_east;
-                    let delta_hi = rect.y_hi - r.y_hi_east;
-                    let rect_len = rect.axis_len as i32;
-                    debug_assert_eq!(
-                        rect_len, 1,
-                        "merge_walls_with_tilt expects 1-unit input rects"
-                    );
-                    match gradient {
-                        None => {
-                            gradient = Some((delta_lo, delta_hi));
-                            r.axis_len += rect.axis_len;
-                            r.y_lo_east = rect.y_lo;
-                            r.y_hi_east = rect.y_hi;
-                        }
-                        Some((g_lo, g_hi)) => {
-                            if delta_lo == g_lo && delta_hi == g_hi {
-                                r.axis_len += rect.axis_len;
-                                r.y_lo_east = rect.y_lo;
-                                r.y_hi_east = rect.y_hi;
-                            } else {
-                                emit(&mut out, *r);
-                                run = Some(rect_quad);
-                                gradient = None;
-                            }
-                        }
+                        gradient = Some((rect_delta_lo, rect_delta_hi));
                     }
                 }
             }
         }
         if let Some(r) = run {
-            out.push(apply_slope_plane_to_quad(r, taller_plane));
+            out.push(r);
         }
     }
     out
-}
-
-/// If the quad's taller side is a Planar slope, replace its y_hi values with
-/// the plane's exact y at the quad's west and east endpoints — so the wall's
-/// top edge matches the slope surface pixel-for-pixel and leaves no gap.
-fn apply_slope_plane_to_quad(q: WallQuad, plane: Option<(i32, i32, i32)>) -> WallQuad {
-    let Some((gx, gz, intercept)) = plane else {
-        return q;
-    };
-    let (west_x, west_z, east_x, east_z) = match q.axis {
-        EdgeAxis::X => {
-            // Wall at mesh_x = base_px + 1, z varying.
-            let mx = (q.base_px + 1) as i32;
-            (mx, q.base_pz as i32, mx, (q.base_pz + q.axis_len) as i32)
-        }
-        EdgeAxis::Z => {
-            // Wall at mesh_z = base_pz + 1, x varying.
-            let mz = (q.base_pz + 1) as i32;
-            (q.base_px as i32, mz, (q.base_px + q.axis_len) as i32, mz)
-        }
-    };
-    WallQuad {
-        y_hi_west: gx * west_x + gz * west_z + intercept,
-        y_hi_east: gx * east_x + gz * east_z + intercept,
-        ..q
-    }
 }
 
 fn emit_wall_quad(q: &WallQuad, out: &mut MeshBuffers) {
@@ -986,121 +896,11 @@ fn emit_wall_quad(q: &WallQuad, out: &mut MeshBuffers) {
     }
 }
 
-/// Read a heights array with bounds-checked access. Returns `SENTINEL_NO_SURFACE`
-/// for out-of-bounds coordinates so `corner_rule` treats them as cliff neighbors.
-fn height_at(heights: &[i32], padded_xz: usize, x: i32, z: i32) -> i32 {
-    if x < 0 || z < 0 || x >= padded_xz as i32 || z >= padded_xz as i32 {
-        SENTINEL_NO_SURFACE
-    } else {
-        heights[(x as usize) * padded_xz + z as usize]
-    }
-}
-
-/// Corners on the east (+x) edge of column `(px, pz)`: `(c10, c11)`.
-fn east_edge_pair(heights: &[i32], padded_xz: usize, px: usize, pz: usize) -> (i32, i32) {
-    let own = heights[px * padded_xz + pz];
-    let (x, z) = (px as i32, pz as i32);
-    let c10 = corner_rule(
-        [
-            height_at(heights, padded_xz, x, z - 1),
-            height_at(heights, padded_xz, x + 1, z - 1),
-            own,
-            height_at(heights, padded_xz, x + 1, z),
-        ],
-        own,
-    );
-    let c11 = corner_rule(
-        [
-            own,
-            height_at(heights, padded_xz, x + 1, z),
-            height_at(heights, padded_xz, x, z + 1),
-            height_at(heights, padded_xz, x + 1, z + 1),
-        ],
-        own,
-    );
-    (c10, c11)
-}
-
-/// Corners on the west (-x) edge of column `(px, pz)`: `(c00, c01)`.
-fn west_edge_pair(heights: &[i32], padded_xz: usize, px: usize, pz: usize) -> (i32, i32) {
-    let own = heights[px * padded_xz + pz];
-    let (x, z) = (px as i32, pz as i32);
-    let c00 = corner_rule(
-        [
-            height_at(heights, padded_xz, x - 1, z - 1),
-            height_at(heights, padded_xz, x, z - 1),
-            height_at(heights, padded_xz, x - 1, z),
-            own,
-        ],
-        own,
-    );
-    let c01 = corner_rule(
-        [
-            height_at(heights, padded_xz, x - 1, z),
-            own,
-            height_at(heights, padded_xz, x - 1, z + 1),
-            height_at(heights, padded_xz, x, z + 1),
-        ],
-        own,
-    );
-    (c00, c01)
-}
-
-/// Corners on the south (+z) edge of column `(px, pz)`: `(c01, c11)`.
-fn south_edge_pair(heights: &[i32], padded_xz: usize, px: usize, pz: usize) -> (i32, i32) {
-    let own = heights[px * padded_xz + pz];
-    let (x, z) = (px as i32, pz as i32);
-    let c01 = corner_rule(
-        [
-            height_at(heights, padded_xz, x - 1, z),
-            own,
-            height_at(heights, padded_xz, x - 1, z + 1),
-            height_at(heights, padded_xz, x, z + 1),
-        ],
-        own,
-    );
-    let c11 = corner_rule(
-        [
-            own,
-            height_at(heights, padded_xz, x + 1, z),
-            height_at(heights, padded_xz, x, z + 1),
-            height_at(heights, padded_xz, x + 1, z + 1),
-        ],
-        own,
-    );
-    (c01, c11)
-}
-
-/// Corners on the north (-z) edge of column `(px, pz)`: `(c00, c10)`.
-fn north_edge_pair(heights: &[i32], padded_xz: usize, px: usize, pz: usize) -> (i32, i32) {
-    let own = heights[px * padded_xz + pz];
-    let (x, z) = (px as i32, pz as i32);
-    let c00 = corner_rule(
-        [
-            height_at(heights, padded_xz, x - 1, z - 1),
-            height_at(heights, padded_xz, x, z - 1),
-            height_at(heights, padded_xz, x - 1, z),
-            own,
-        ],
-        own,
-    );
-    let c10 = corner_rule(
-        [
-            height_at(heights, padded_xz, x, z - 1),
-            height_at(heights, padded_xz, x + 1, z - 1),
-            own,
-            height_at(heights, padded_xz, x + 1, z),
-        ],
-        own,
-    );
-    (c00, c10)
-}
-
-/// Emit a wall on the `+x`/`-x` plane at `x`, with potentially-different y
-/// values at each z endpoint (`z1` = west/low-z, `z2` = east/high-z). When
-/// `y_*_west == y_*_east`, this degenerates to a rectangle. Otherwise it's a
-/// tilted quad that smooths stepped profiles. Normals are computed per-
-/// triangle from positions so tilt is reflected correctly.
+/// Emit a wall on the `+x`/`-x` plane at `x`, with potentially-different
+/// y ranges at each z endpoint (`z1` = west/low-z, `z2` = east/high-z). When
+/// one endpoint's `y_lo == y_hi`, that end collapses to a point and the wall
+/// is emitted as a single triangle (avoids degenerate triangles in the
+/// trimesh collider). Otherwise two triangles form the trapezoid.
 fn emit_wall_x_quad(
     out: &mut MeshBuffers,
     x: f32,
@@ -1112,7 +912,40 @@ fn emit_wall_x_quad(
     z2: f32,
     normal_positive: bool,
 ) {
-    if y_hi_west <= y_lo_west && y_hi_east <= y_lo_east {
+    let west_deg = y_lo_west >= y_hi_west;
+    let east_deg = y_lo_east >= y_hi_east;
+    if west_deg && east_deg {
+        return;
+    }
+    let axis_normal = if normal_positive {
+        [1.0, 0.0, 0.0]
+    } else {
+        [-1.0, 0.0, 0.0]
+    };
+    if west_deg {
+        // Triangle: west vertex alone at (y_lo_west==y_hi_west), east edge full.
+        let p_w = [x, y_lo_west, z1];
+        let p_lo_e = [x, y_lo_east, z2];
+        let p_hi_e = [x, y_hi_east, z2];
+        // For normal +x, order (p_w, p_hi_e, p_lo_e) is CCW.
+        let (v0, v1, v2) = if normal_positive {
+            (p_w, p_hi_e, p_lo_e)
+        } else {
+            (p_w, p_lo_e, p_hi_e)
+        };
+        push_wall_triangle(out, v0, v1, v2, axis_normal);
+        return;
+    }
+    if east_deg {
+        let p_lo_w = [x, y_lo_west, z1];
+        let p_hi_w = [x, y_hi_west, z1];
+        let p_e = [x, y_lo_east, z2];
+        let (v0, v1, v2) = if normal_positive {
+            (p_lo_w, p_hi_w, p_e)
+        } else {
+            (p_hi_w, p_lo_w, p_e)
+        };
+        push_wall_triangle(out, v0, v1, v2, axis_normal);
         return;
     }
     let p0 = [x, y_lo_west, z1];
@@ -1123,7 +956,6 @@ fn emit_wall_x_quad(
     out.positions.extend_from_slice(&[p0, p1, p2, p3]);
     let n0 = triangle_normal_from_indices(&[p0, p1, p2, p3], 0, 1, 2, normal_positive);
     let n1 = triangle_normal_from_indices(&[p0, p1, p2, p3], 1, 3, 2, normal_positive);
-    // Shared vertices get averaged normals for smooth shading on the tilt.
     out.normals
         .extend_from_slice(&[n0, average_normal(n0, n1), average_normal(n0, n1), n1]);
     out.uvs.extend_from_slice(&[
@@ -1154,7 +986,39 @@ fn emit_wall_z_quad(
     x2: f32,
     normal_positive: bool,
 ) {
-    if y_hi_west <= y_lo_west && y_hi_east <= y_lo_east {
+    let west_deg = y_lo_west >= y_hi_west;
+    let east_deg = y_lo_east >= y_hi_east;
+    if west_deg && east_deg {
+        return;
+    }
+    let axis_normal = if normal_positive {
+        [0.0, 0.0, 1.0]
+    } else {
+        [0.0, 0.0, -1.0]
+    };
+    if west_deg {
+        let p_w = [x1, y_lo_west, z];
+        let p_lo_e = [x2, y_lo_east, z];
+        let p_hi_e = [x2, y_hi_east, z];
+        // For normal +z, order (p_w, p_lo_e, p_hi_e) is CCW.
+        let (v0, v1, v2) = if normal_positive {
+            (p_w, p_lo_e, p_hi_e)
+        } else {
+            (p_w, p_hi_e, p_lo_e)
+        };
+        push_wall_triangle(out, v0, v1, v2, axis_normal);
+        return;
+    }
+    if east_deg {
+        let p_lo_w = [x1, y_lo_west, z];
+        let p_hi_w = [x1, y_hi_west, z];
+        let p_e = [x2, y_lo_east, z];
+        let (v0, v1, v2) = if normal_positive {
+            (p_hi_w, p_lo_w, p_e)
+        } else {
+            (p_lo_w, p_hi_w, p_e)
+        };
+        push_wall_triangle(out, v0, v1, v2, axis_normal);
         return;
     }
     let p0 = [x1, y_lo_west, z];
@@ -1180,6 +1044,21 @@ fn emit_wall_z_quad(
         out.indices
             .extend_from_slice(&[base, base + 1, base + 2, base + 1, base + 3, base + 2]);
     }
+}
+
+fn push_wall_triangle(
+    out: &mut MeshBuffers,
+    v0: [f32; 3],
+    v1: [f32; 3],
+    v2: [f32; 3],
+    normal: [f32; 3],
+) {
+    let base = out.positions.len() as u32;
+    out.positions.extend_from_slice(&[v0, v1, v2]);
+    out.normals.extend_from_slice(&[normal; 3]);
+    out.uvs
+        .extend_from_slice(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
+    out.indices.extend_from_slice(&[base, base + 1, base + 2]);
 }
 
 fn triangle_normal_from_indices(
@@ -1467,19 +1346,10 @@ mod tests {
     }
 
     #[test]
-    fn wall_triangle_area_above_parry_threshold() {
-        // Unit 1x1 saddle triangle has area 0.5, well above 1e-4.
-        let v = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
-        assert!(triangle_area(&v) > MIN_PARRY_TRIANGLE_AREA);
-        // Degenerate triangle (all colinear): area 0.
-        let degenerate = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
-        assert!(triangle_area(&degenerate) < MIN_PARRY_TRIANGLE_AREA);
-    }
-
-    #[test]
     fn merge_walls_with_tilt_combines_arithmetic_progression() {
-        // 6 consecutive 1-unit +z-axis walls with y_hi stepping 4..9 should
-        // merge into ONE WallQuad with tilted y_hi from 4 (west) to 9 (east).
+        // 6 consecutive 1-unit +z-axis wall rects, each tilted by 1 unit in
+        // y_hi (west→east), continuous at their shared seams, merge into ONE
+        // WallQuad spanning the full run with tilted y_hi 4 (west) → 10 (east).
         let mut rects = Vec::new();
         for i in 0..6 {
             rects.push(WallRect {
@@ -1487,10 +1357,11 @@ mod tests {
                 base_px: 11 + i,
                 base_pz: 5,
                 axis_len: 1,
-                y_lo: 2,
-                y_hi: 4 + i as i32,
+                y_lo_west: 2,
+                y_lo_east: 2,
+                y_hi_west: 4 + i as i32,
+                y_hi_east: 5 + i as i32,
                 normal_positive: true,
-                taller_plane: None,
             });
         }
         let merged = merge_walls_with_tilt(rects);
@@ -1508,7 +1379,7 @@ mod tests {
         assert_eq!(q.y_lo_west, 2);
         assert_eq!(q.y_lo_east, 2);
         assert_eq!(q.y_hi_west, 4);
-        assert_eq!(q.y_hi_east, 9);
+        assert_eq!(q.y_hi_east, 10);
     }
 
     #[test]
@@ -1693,25 +1564,6 @@ mod tests {
     }
 
     #[test]
-    fn make_triangle_wall_x_produces_nondegenerate_triangles() {
-        // Both classifier branches must produce non-degenerate triangles.
-        // (true, false): flush at lo-z, step at hi-z. a10=b00=3, a11=5, b01=3.
-        let emission = make_triangle_wall_x(2, 5, 3, 5, 3, true);
-        if let WallEmission::Triangle { vertices } = emission {
-            assert!(triangle_area(&vertices) >= MIN_PARRY_TRIANGLE_AREA);
-        } else {
-            panic!("expected Triangle");
-        }
-        // (false, true): flush at hi-z, step at lo-z. a11=b01=3, a10=5, b00=3.
-        let emission = make_triangle_wall_x(2, 5, 3, 5, 3, false);
-        if let WallEmission::Triangle { vertices } = emission {
-            assert!(triangle_area(&vertices) >= MIN_PARRY_TRIANGLE_AREA);
-        } else {
-            panic!("expected Triangle");
-        }
-    }
-
-    #[test]
     fn cross_chunk_pit_emits_lip_walls() {
         // Voxels: cross-shaped pit at the bottom of the padded box. Pit cells
         // are solid only at py=0 (padding row, simulating "neighbor chunk
@@ -1747,6 +1599,138 @@ mod tests {
             "expected horizontal lip walls around pit, got {} of {} normals",
             horizontal_walls,
             normals.len(),
+        );
+    }
+
+    /// Run the classification + extension passes against a heightmap-derived
+    /// voxel grid and return the resulting `tops` array. Used by the
+    /// cliff-pulled-extension tests below.
+    fn tops_for_heightmap<F: Fn(i32, i32) -> i32>(f: F) -> (Vec<Option<ColumnTop>>, usize) {
+        let voxels = heightmap_voxels(f);
+        let shape = padded_shape();
+        let padded_xz = shape.as_array()[0] as usize;
+        let heights = column_heights(&voxels, &shape);
+        let materials = column_materials(&voxels, &shape);
+        let mut tops = classify_columns(&heights, &materials, padded_xz);
+        extend_slopes_over_nonplanar(&mut tops, &heights, padded_xz);
+        (tops, padded_xz)
+    }
+
+    /// Pyramid hip column `(1, 1)` has corners `[3,2,2,2]` (pulled up at c00 by
+    /// the tip). Its W neighbor `(0, 1)` classifies Planar with `[3,3,2,2]`
+    /// (gx=0, gz=-1). Pre-fix, the ≥3-match rule adopted the W plane and
+    /// erased the hip; post-fix, c10's 2×2 neighborhood has delta=1 (not
+    /// cliff), so adoption is rejected and the hip survives.
+    #[test]
+    fn extension_rejects_pyramid_hip_corner() {
+        let (tops, padded_xz) = tops_for_heightmap(|wx, wz| match wx.abs().max(wz.abs()) {
+            0 => 3,
+            1 => 2,
+            2 => 1,
+            _ => 0,
+        });
+        // world (1, 1) → padded (2, 2). heights[] stores top-face-y = h + 2.
+        let top = tops[2 * padded_xz + 2];
+        assert!(
+            matches!(
+                top,
+                Some(ColumnTop::NonPlanar {
+                    corners: [5, 4, 4, 4],
+                    ..
+                })
+            ),
+            "pyramid hip at padded (2, 2) should remain NonPlanar [5, 4, 4, 4] (top-face), got {:?}",
+            top
+        );
+    }
+
+    /// Saddle SE hip column `(1, 8)` has corners `[1,0,1,1]`. Its N neighbor
+    /// `(1, 7)` classifies Planar with `[1,0,1,0]` (gx=-1, gz=0). Pre-fix,
+    /// adoption flipped c11 down from 1 to 0, collapsing the two-direction
+    /// hip into a one-direction slope. Post-fix, c11's 2×2 delta is 1 (not
+    /// cliff), so adoption is rejected.
+    #[test]
+    fn extension_rejects_saddle_se_hip_corner() {
+        // Replica of original saddle shifted to center (3, 3) for padding
+        // comfort. Corresponds to original column (1, 8) → here (4, 3).
+        let saddle = |wx: i32, wz: i32| -> i32 {
+            if (1..=5).contains(&wx) && (1..=5).contains(&wz) {
+                ((wx > 3) == (wz > 3)) as i32
+            } else {
+                0
+            }
+        };
+        let (tops, padded_xz) = tops_for_heightmap(saddle);
+        // world (4, 3) → padded (5, 4). Heights stored with +2 offset.
+        let top = tops[5 * padded_xz + 4];
+        assert!(
+            matches!(
+                top,
+                Some(ColumnTop::NonPlanar {
+                    corners: [3, 2, 3, 3],
+                    ..
+                })
+            ),
+            "saddle SE hip at padded (5, 4) should remain NonPlanar [3, 2, 3, 3] (top-face), got {:?}",
+            top
+        );
+    }
+
+    /// Staircase north-edge column with corners `[h, h+1, h, h]` extends to
+    /// `[h, h+1, h, h+1]` because c11's 2×2 neighborhood spans the cliff
+    /// (delta ≥ 2), making it cliff-pulled.
+    #[test]
+    fn extension_accepts_staircase_edge_corner() {
+        // Staircase inside wx ∈ [0, 7], wz ∈ [0, 4]: h = wx + 1. Else 0.
+        let staircase = |wx: i32, wz: i32| -> i32 {
+            if (0..=7).contains(&wx) && (0..=4).contains(&wz) {
+                wx + 1
+            } else {
+                0
+            }
+        };
+        let (tops, padded_xz) = tops_for_heightmap(staircase);
+        // world (3, 4) → padded (4, 5). own_h = 4 + 2 = 6 (top-face).
+        let top = tops[4 * padded_xz + 5];
+        let expected = [6, 7, 6, 7];
+        assert!(
+            matches!(
+                top,
+                Some(ColumnTop::Planar { corners, .. }) if corners == expected
+            ),
+            "staircase north-edge at padded (4, 5) should extend to Planar {:?}, got {:?}",
+            expected,
+            top
+        );
+    }
+
+    /// Staircase *west* end where the far-side height drop is only 1 unit.
+    /// The naïve "far-side drop ≥ 2" heuristic rejects this, but the c11
+    /// corner IS cliff-pulled because the 2×2 neighborhood spans the drop
+    /// on the east-plus-south diagonal (delta = 2). Fix must accept it.
+    #[test]
+    fn extension_accepts_small_drop_edge_corner() {
+        let staircase = |wx: i32, wz: i32| -> i32 {
+            if (0..=7).contains(&wx) && (0..=4).contains(&wz) {
+                wx + 1
+            } else {
+                0
+            }
+        };
+        let (tops, padded_xz) = tops_for_heightmap(staircase);
+        // world (0, 4) → padded (1, 5). own_h = 0 + 1 + 2 = 3 (top-face).
+        // Corners before extension: [3, 4, 3, 3] (c11 cliff-pulled).
+        // Corners after extension: [3, 4, 3, 4] (Planar).
+        let top = tops[1 * padded_xz + 5];
+        let expected = [3, 4, 3, 4];
+        assert!(
+            matches!(
+                top,
+                Some(ColumnTop::Planar { corners, .. }) if corners == expected
+            ),
+            "staircase west-end north edge at padded (1, 5) should extend to Planar {:?}, got {:?}",
+            expected,
+            top
         );
     }
 

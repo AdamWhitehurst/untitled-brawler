@@ -735,6 +735,126 @@ Delete `emit_cubic_walls_simple` — `mesh_chunk_sloped` now calls `emit_walls` 
 
 ---
 
+## Phase 4.5: Cliff-Pulled-Only Slope Extension
+
+### Problem
+
+`extend_slopes_over_nonplanar` (introduced by the Phase 4 extension commit `ed466820`) adopts a neighbor's Planar slope plane into a `NonPlanar` column whenever ≥3 of 4 corners match the plane. This criterion cannot distinguish two structurally different reasons a corner mismatches:
+
+1. **Cliff artifact** — `corner_rule` pulled the corner down to `own_h` because the 2×2 neighborhood has delta ≥ 2. The column genuinely sits on the slope plane; adoption restores the correct corner.
+2. **Hip/valley ridge** — `corner_rule` pulled the corner up to `max` because the 2×2 neighborhood has delta = 1 with `own_h == min` but `own_count != 1`. The column is a genuine hip or valley; adoption would erase that shape and produce thin triangular wall fins.
+
+Screenshot bug: pyramid hip columns (e.g. `(1, 1)` corners `[3,2,2,2]`) and saddle hip/valley columns (e.g. `(1, 8)` corners `[1,0,1,1]`, `(0, 9)` corners `[1,1,0,1]`) all get over-adopted, rendering one-directional slopes instead of two-sloped-edge hips.
+
+### Fix
+
+Only lift corners that were *cliff-pulled* by `corner_rule`. For each NP corner that differs from the adopted plane's value, re-derive the 4 raw heights feeding `corner_rule` at that mesh corner and check whether `max - min ≥ 2`. If not, the mismatch is a hip ridge or pit floor and must not be overwritten.
+
+### Changes
+
+#### 1. Add cliff-pulled helper
+**File**: `crates/voxel_map_engine/src/meshing/sloped.rs`
+**Action**: modify
+
+```rust
+/// Returns the 4 raw heights feeding `corner_rule` for mesh corner `corner_idx`
+/// of column `(px, pz)`. `corner_idx` ∈ [0, 4) in order `[c00, c10, c01, c11]`.
+fn corner_neighborhood_heights(
+    heights: &[i32],
+    padded_xz: usize,
+    px: usize,
+    pz: usize,
+    corner_idx: usize,
+) -> [i32; 4] {
+    let (dx, dz) = match corner_idx {
+        0 => (-1i32, -1),
+        1 => (1, -1),
+        2 => (-1, 1),
+        3 => (1, 1),
+        _ => unreachable!("corner_idx must be 0..4"),
+    };
+    // The 2×2 mesh corner is shared by 4 columns; build the same set
+    // `corner_rule` sees from the classifier.
+    let h = |x: i32, z: i32| -> i32 {
+        if x < 0 || z < 0 || x as usize >= padded_xz || z as usize >= padded_xz {
+            SENTINEL_NO_SURFACE
+        } else {
+            heights[x as usize * padded_xz + z as usize]
+        }
+    };
+    let px_i = px as i32;
+    let pz_i = pz as i32;
+    [
+        h(px_i, pz_i),
+        h(px_i + dx, pz_i),
+        h(px_i, pz_i + dz),
+        h(px_i + dx, pz_i + dz),
+    ]
+}
+
+/// A corner was pulled to `own_h` by the cliff branch of `corner_rule`
+/// iff its 2×2 neighborhood has max-min ≥ 2 OR contains a SENTINEL.
+/// These corners are safe to lift onto a slope plane; `max`-pulled hip
+/// corners and isolated-pit floors are not.
+fn corner_is_cliff_pulled(values: [i32; 4]) -> bool {
+    if values.iter().any(|&v| v == SENTINEL_NO_SURFACE) {
+        return true;
+    }
+    let max = *values.iter().max().unwrap();
+    let min = *values.iter().min().unwrap();
+    max - min >= 2
+}
+```
+
+#### 2. Filter the adoption check
+**File**: `crates/voxel_map_engine/src/meshing/sloped.rs`
+**Action**: modify `extend_slopes_over_nonplanar`
+
+Change the match-count test to additionally require that every mismatched corner is cliff-pulled. The heights slice (currently `_heights`) is re-threaded in:
+
+```rust
+fn extend_slopes_over_nonplanar(
+    tops: &mut Vec<Option<ColumnTop>>,
+    heights: &[i32],
+    padded_xz: usize,
+) {
+    // ... existing loop structure ...
+    let all_mismatches_cliff_pulled = (0..4).all(|i| {
+        np_corners[i] == plane_corners[i]
+            || corner_is_cliff_pulled(
+                corner_neighborhood_heights(heights, padded_xz, px, pz, i),
+            )
+    });
+    if matches >= 3 && all_mismatches_cliff_pulled {
+        adopt = Some((gx, gz, intercept));
+        break;
+    }
+    // ...
+}
+```
+
+Call site at `mesh_chunk_sloped` already passes `&heights`; the `_heights` parameter reverts to `heights` (rename removed).
+
+### Verification
+
+#### Automated
+- [x] `cargo check-all` passes
+- [x] `cargo test -p voxel_map_engine --lib` passes (131/131)
+- [x] New test `extension_rejects_pyramid_hip_corner` — pyramid `(1, 1)` in padded coords stays NonPlanar with corners `[5, 4, 4, 4]` (stored top-face heights; equivalent to `[3, 2, 2, 2]` in terrain-h terms)
+- [x] New test `extension_rejects_saddle_se_hip_corner` — saddle SE hip stays NonPlanar with corners `[3, 2, 3, 3]` (equivalent to `[1, 0, 1, 1]`)
+- [x] New test `extension_accepts_staircase_edge_corner` — staircase north-edge column extends to Planar `[6, 7, 6, 7]` (equivalent to `[3, 4, 3, 4]`)
+- [x] New test `extension_accepts_small_drop_edge_corner` — west-end staircase edge extends to Planar `[3, 4, 3, 4]`; c11's 2×2 neighborhood has diagonal delta=2 so the cliff check accepts it
+- [x] Existing `stepped_generator_staircase_chunk_has_merged_slope` and `staircase_south_face_emits_tilted_wall_not_stepped` still pass
+- [x] Existing `pyramid_tip_emits_hip_triangles` still passes
+
+#### Manual
+- [ ] `cargo run --example stepped_terrain` — pyramid's four corner columns render as hip wedges with two sloped edges meeting at the raised corner
+- [ ] Saddle's interior hip/valley columns at `(1, 8)` and `(0, 9)` render with two sloped edges each, not single-direction slopes
+- [ ] No thin triangular wall fins at `x=2` or `z=9` where adopted corners previously mismatched planar neighbors
+- [ ] Staircase, reversed staircase, and cliff fixtures look unchanged from pre-fix
+
+---
+
 ## Phase 5: Cross-Chunk Continuity + Integration Validation
 
 ### Changes
