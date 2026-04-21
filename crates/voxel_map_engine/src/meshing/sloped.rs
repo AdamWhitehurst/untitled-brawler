@@ -85,7 +85,7 @@ pub fn mesh_chunk_sloped<S: Shape<3, Coord = u32>>(
     let mut buf = MeshBuffers::new();
     emit_planar_tops(&tops, padded_xz, &mut buf);
     emit_nonplanar_tops(&tops, padded_xz, &mut buf);
-    emit_walls(&heights, &surface_heights, padded_xz, &mut buf);
+    emit_walls(&heights, &surface_heights, &tops, padded_xz, &mut buf);
     emit_bottom_faces(voxels, shape, &mut buf);
 
     if buf.is_empty() {
@@ -551,6 +551,11 @@ struct WallRect {
     y_lo: i32,
     y_hi: i32,
     normal_positive: bool,
+    /// The taller column's Planar plane `(gx, gz, intercept)`, if the taller
+    /// col is on a Planar slope. Used by the tilt merger so that merged
+    /// tilted quads follow the plane's exact gradient (not a linear
+    /// interpolation between rect endpoints that doesn't match the slope).
+    taller_plane: Option<(i32, i32, i32)>,
 }
 
 /// A 4-corner wall polygon. When `y_*_west` equals `y_*_east`, it's a
@@ -614,12 +619,18 @@ fn triangle_area(v: &[[f32; 3]; 3]) -> f32 {
 /// Classifies each edge as Skip / Triangle (saddle) / Rectangle. Triangles
 /// emit immediately; rectangles are collected and greedy-merged along their
 /// parallel axis before emission.
-fn emit_walls(heights: &[i32], surface_heights: &[i32], padded_xz: usize, out: &mut MeshBuffers) {
+fn emit_walls(
+    heights: &[i32],
+    surface_heights: &[i32],
+    tops: &[Option<ColumnTop>],
+    padded_xz: usize,
+    out: &mut MeshBuffers,
+) {
     let mut rects: Vec<WallRect> = Vec::new();
 
     for pz in 1..padded_xz - 1 {
         for px in 1..padded_xz - 1 {
-            match classify_edge_x(heights, surface_heights, padded_xz, px, pz) {
+            match classify_edge_x(heights, surface_heights, tops, padded_xz, px, pz) {
                 WallEmission::Skip => {}
                 WallEmission::Triangle { vertices } => {
                     debug_assert!(
@@ -636,7 +647,7 @@ fn emit_walls(heights: &[i32], surface_heights: &[i32], padded_xz: usize, out: &
     }
     for px in 1..padded_xz - 1 {
         for pz in 1..padded_xz - 1 {
-            match classify_edge_z(heights, surface_heights, padded_xz, px, pz) {
+            match classify_edge_z(heights, surface_heights, tops, padded_xz, px, pz) {
                 WallEmission::Skip => {}
                 WallEmission::Triangle { vertices } => {
                     debug_assert!(
@@ -660,6 +671,7 @@ fn emit_walls(heights: &[i32], surface_heights: &[i32], padded_xz: usize, out: &
 fn classify_edge_x(
     heights: &[i32],
     surface_heights: &[i32],
+    tops: &[Option<ColumnTop>],
     padded_xz: usize,
     px: usize,
     pz: usize,
@@ -669,6 +681,8 @@ fn classify_edge_x(
         heights[(px + 1) * padded_xz + pz],
         surface_heights[px * padded_xz + pz],
         surface_heights[(px + 1) * padded_xz + pz],
+        &tops[px * padded_xz + pz],
+        &tops[(px + 1) * padded_xz + pz],
         EdgeAxis::X,
         px,
         pz,
@@ -678,6 +692,7 @@ fn classify_edge_x(
 fn classify_edge_z(
     heights: &[i32],
     surface_heights: &[i32],
+    tops: &[Option<ColumnTop>],
     padded_xz: usize,
     px: usize,
     pz: usize,
@@ -687,6 +702,8 @@ fn classify_edge_z(
         heights[px * padded_xz + pz + 1],
         surface_heights[px * padded_xz + pz],
         surface_heights[px * padded_xz + pz + 1],
+        &tops[px * padded_xz + pz],
+        &tops[px * padded_xz + pz + 1],
         EdgeAxis::Z,
         px,
         pz,
@@ -694,21 +711,18 @@ fn classify_edge_z(
 }
 
 /// Emit a wall rectangle sized from the two columns' OWN top-face-y values.
-/// Earlier revisions used corner values (from `corner_rule`), but that gave a
-/// saddle triangle that covered only half the physically-exposed face when
-/// one column's corner was pulled up by an adjacent slope — producing holes.
-/// Using own heights always gives a full rectangle matching the actual
-/// voxel exposure.
-///
-/// Slope-interior walls (where delta=1 between columns that ARE on the same
-/// Planar slope) do emit rectangles too; they live below the slope's top
-/// surface and are invisible from outside the solid. The tilt-merger later
-/// combines adjacent gradient-1 rectangles into tilted quads.
+/// Also captures the taller column's Planar-slope plane so the tilt merger
+/// can later use the plane's exact gradient for merged quad endpoints —
+/// otherwise a linear interpolation between first/last rect y_hi values
+/// would produce a slope-mismatched gradient and visible gaps at the
+/// slope's south edge.
 fn classify_edge_by_own_heights(
     top_a: i32,
     top_b: i32,
     surf_a: i32,
     surf_b: i32,
+    top_cls_a: &Option<ColumnTop>,
+    top_cls_b: &Option<ColumnTop>,
     axis: EdgeAxis,
     px: usize,
     pz: usize,
@@ -729,6 +743,11 @@ fn classify_edge_by_own_heights(
     if h_a == h_b {
         return WallEmission::Skip;
     }
+    let taller_plane = if h_a >= h_b {
+        extract_slope_plane(top_cls_a)
+    } else {
+        extract_slope_plane(top_cls_b)
+    };
     WallEmission::Rectangle(WallRect {
         axis,
         base_px: px,
@@ -737,7 +756,21 @@ fn classify_edge_by_own_heights(
         y_lo: h_a.min(h_b),
         y_hi: h_a.max(h_b),
         normal_positive: h_a >= h_b,
+        taller_plane,
     })
+}
+
+/// Extract a non-flat Planar plane from a `ColumnTop`, or None for flat/NonPlanar.
+fn extract_slope_plane(top: &Option<ColumnTop>) -> Option<(i32, i32, i32)> {
+    match top {
+        Some(ColumnTop::Planar {
+            gradient_x,
+            gradient_z,
+            intercept,
+            ..
+        }) if *gradient_x != 0 || *gradient_z != 0 => Some((*gradient_x, *gradient_z, *intercept)),
+        _ => None,
+    }
 }
 
 /// Build a saddle triangle for a +x edge. `step_high_z` = true means the
@@ -796,20 +829,25 @@ fn make_triangle_wall_z(
 /// diagonal wall faces along staircase-like terrain.
 fn merge_walls_with_tilt(rects: Vec<WallRect>) -> Vec<WallQuad> {
     use std::collections::BTreeMap;
-    let mut groups: BTreeMap<(EdgeAxis, usize, bool), Vec<WallRect>> = BTreeMap::new();
+    // Group by taller_plane too — rects on the same slope plane can merge
+    // with plane-derived endpoints; rects with different planes (or no plane)
+    // emit separately so the merged quad's top edge follows the slope exactly
+    // at the plane boundary.
+    let mut groups: BTreeMap<(EdgeAxis, usize, bool, Option<(i32, i32, i32)>), Vec<WallRect>> =
+        BTreeMap::new();
     for r in rects {
         let perp = match r.axis {
             EdgeAxis::X => r.base_px,
             EdgeAxis::Z => r.base_pz,
         };
         groups
-            .entry((r.axis, perp, r.normal_positive))
+            .entry((r.axis, perp, r.normal_positive, r.taller_plane))
             .or_default()
             .push(r);
     }
 
     let mut out = Vec::new();
-    for (_, mut group) in groups {
+    for ((_axis, _perp, _normal, taller_plane), mut group) in groups {
         group.sort_by_key(|r| match r.axis {
             EdgeAxis::X => r.base_pz,
             EdgeAxis::Z => r.base_px,
@@ -817,6 +855,11 @@ fn merge_walls_with_tilt(rects: Vec<WallRect>) -> Vec<WallQuad> {
 
         let mut run: Option<WallQuad> = None;
         let mut gradient: Option<(i32, i32)> = None; // (delta_y_lo, delta_y_hi) per unit
+
+        let emit = |out: &mut Vec<WallQuad>, q: WallQuad| {
+            let final_quad = apply_slope_plane_to_quad(q, taller_plane);
+            out.push(final_quad);
+        };
 
         for rect in group {
             let parallel_start = match rect.axis {
@@ -837,31 +880,20 @@ fn merge_walls_with_tilt(rects: Vec<WallRect>) -> Vec<WallQuad> {
                     };
                     let adjacent = r_end == parallel_start;
                     if !adjacent {
-                        out.push(*r);
+                        emit(&mut out, *r);
                         run = Some(rect_quad);
                         gradient = None;
                         continue;
                     }
-                    // Delta at the shared boundary from r's east to rect's west.
                     let delta_lo = rect.y_lo - r.y_lo_east;
                     let delta_hi = rect.y_hi - r.y_hi_east;
                     let rect_len = rect.axis_len as i32;
-                    // For the run-internal gradient to match, both:
-                    //   (a) this rect's own internal spans must be gradient-0
-                    //       (which is always true since input rects are
-                    //       constant), AND
-                    //   (b) the transition delta must match the established
-                    //       gradient (scaled to whatever rect_len is).
-                    // Since classify_edge emits axis_len=1 rects, this
-                    // simplifies: the transition delta IS the per-unit
-                    // gradient.
                     debug_assert_eq!(
                         rect_len, 1,
                         "merge_walls_with_tilt expects 1-unit input rects"
                     );
                     match gradient {
                         None => {
-                            // First transition; sets the run's gradient.
                             gradient = Some((delta_lo, delta_hi));
                             r.axis_len += rect.axis_len;
                             r.y_lo_east = rect.y_lo;
@@ -873,7 +905,7 @@ fn merge_walls_with_tilt(rects: Vec<WallRect>) -> Vec<WallQuad> {
                                 r.y_lo_east = rect.y_lo;
                                 r.y_hi_east = rect.y_hi;
                             } else {
-                                out.push(*r);
+                                emit(&mut out, *r);
                                 run = Some(rect_quad);
                                 gradient = None;
                             }
@@ -883,10 +915,36 @@ fn merge_walls_with_tilt(rects: Vec<WallRect>) -> Vec<WallQuad> {
             }
         }
         if let Some(r) = run {
-            out.push(r);
+            out.push(apply_slope_plane_to_quad(r, taller_plane));
         }
     }
     out
+}
+
+/// If the quad's taller side is a Planar slope, replace its y_hi values with
+/// the plane's exact y at the quad's west and east endpoints — so the wall's
+/// top edge matches the slope surface pixel-for-pixel and leaves no gap.
+fn apply_slope_plane_to_quad(q: WallQuad, plane: Option<(i32, i32, i32)>) -> WallQuad {
+    let Some((gx, gz, intercept)) = plane else {
+        return q;
+    };
+    let (west_x, west_z, east_x, east_z) = match q.axis {
+        EdgeAxis::X => {
+            // Wall at mesh_x = base_px + 1, z varying.
+            let mx = (q.base_px + 1) as i32;
+            (mx, q.base_pz as i32, mx, (q.base_pz + q.axis_len) as i32)
+        }
+        EdgeAxis::Z => {
+            // Wall at mesh_z = base_pz + 1, x varying.
+            let mz = (q.base_pz + 1) as i32;
+            (q.base_px as i32, mz, (q.base_px + q.axis_len) as i32, mz)
+        }
+    };
+    WallQuad {
+        y_hi_west: gx * west_x + gz * west_z + intercept,
+        y_hi_east: gx * east_x + gz * east_z + intercept,
+        ..q
+    }
 }
 
 fn emit_wall_quad(q: &WallQuad, out: &mut MeshBuffers) {
@@ -1432,6 +1490,7 @@ mod tests {
                 y_lo: 2,
                 y_hi: 4 + i as i32,
                 normal_positive: true,
+                taller_plane: None,
             });
         }
         let merged = merge_walls_with_tilt(rects);

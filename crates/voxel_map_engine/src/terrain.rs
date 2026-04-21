@@ -517,6 +517,8 @@ impl VoxelGeneratorImpl for FlatGenerator {
 /// - cross-shaped depression (valley corners) at (8, 0)
 /// - saddle (two diagonal peaks and two low corners) at (0, 8)
 /// - multi-unit cliff (Δ≥2 stays cubic) at (-8, 8)
+/// - reversed staircase at x=16..=23, z=6..=14 (180°-rotated view of the
+///   main staircase, isolated from other features)
 pub struct SteppedGenerator {
     pub chunk_size: u32,
     pub shape: RuntimeShape<u32, 3>,
@@ -561,6 +563,12 @@ fn stepped_surface_height(x: i32, z: i32) -> i32 {
     // Multi-unit cliff at x ∈ [-11, -9], z ∈ [6, 10] (Δ=3, should stay cubic)
     if (-11..=-9).contains(&x) && (6..=10).contains(&z) {
         return 3;
+    }
+    // Reversed staircase at x ∈ [16, 23], z ∈ [6, 14]: rises 1 per unit in
+    // -x direction (mirror of the main staircase). Placed away from other
+    // fixtures so its sloped side can be inspected in isolation.
+    if (16..=23).contains(&x) && (6..=14).contains(&z) {
+        return 23 - x;
     }
     0
 }
