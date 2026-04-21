@@ -1228,6 +1228,77 @@ mod tests {
     }
 
     #[test]
+    fn stepped_generator_staircase_chunk_has_merged_slope() {
+        // Chunk (-1, 0, 0) contains the east half of the staircase (world_x
+        // -8..=-1, z 0..=4). The Planar slope region should greedy-merge.
+        use crate::config::VoxelGeneratorImpl;
+        use crate::terrain::SteppedGenerator;
+
+        let generator = SteppedGenerator {
+            chunk_size: 16,
+            shape: padded_shape(),
+        };
+        let voxels = generator.generate_terrain(IVec3::new(-1, 0, 0));
+        let shape = padded_shape();
+        let mesh = mesh_chunk_sloped(&voxels, &shape).expect("mesh");
+        let normals = mesh
+            .attribute(Mesh::ATTRIBUTE_NORMAL)
+            .unwrap()
+            .as_float3()
+            .unwrap();
+        // Sloped top normals are ~(-0.707, 0.707, 0) for +x gradient.
+        // Planar region merges into 2 rects (main 28-cell + isolated (9, 5))
+        // = 8 verts. Hip triangles at the z-edge (NonPlanar pz=5 columns)
+        // emit one slope-direction triangle per column = 3 × 6 = 18 more
+        // verts. Plus (9, 6) NonPlanar anti-diagonal → 3 verts. Total ~29-39
+        // expected; loose upper bound catches real regressions.
+        let sloped_verts = normals
+            .iter()
+            .filter(|n| {
+                (n[0] - (-0.7071)).abs() < 0.01 && (n[1] - 0.7071).abs() < 0.01 && n[2].abs() < 0.01
+            })
+            .count();
+        assert!(
+            sloped_verts >= 8,
+            "expected main slope rect (4) + (9, 5) standalone rect (4) at minimum; got {}",
+            sloped_verts
+        );
+        assert!(
+            sloped_verts < 80,
+            "slopes not merging: got {} sloped vertices (unmerged per-column would be ~112)",
+            sloped_verts
+        );
+    }
+
+    #[test]
+    fn staircase_emits_single_merged_ramp() {
+        // Staircase h(x, z) = x in 0..=7, flat outside. Should produce ONE
+        // merged sloped quad for the slope region and a separate flat-top
+        // quad for the plateau. If greedy merging fails (slopes classified as
+        // NonPlanar or signatures diverging), we'd see many small quads.
+        let voxels = heightmap_voxels(|x, _| x.clamp(0, 7));
+        let shape = padded_shape();
+        let mesh = mesh_chunk_sloped(&voxels, &shape).expect("mesh");
+        let normals = mesh
+            .attribute(Mesh::ATTRIBUTE_NORMAL)
+            .unwrap()
+            .as_float3()
+            .unwrap();
+        // Count tilted normals (slope surface).
+        let sloped_verts = normals
+            .iter()
+            .filter(|n| (n[1] - 0.7071).abs() < 0.01)
+            .count();
+        // A single merged sloped quad has 4 vertices. More means slopes
+        // aren't merging (emitted per-column).
+        assert!(
+            sloped_verts <= 8,
+            "expected staircase slope to merge into few quads; got {} sloped vertices",
+            sloped_verts
+        );
+    }
+
+    #[test]
     fn stepped_generator_all_chunks_no_degenerate_triangles() {
         // Mesh every SteppedGenerator chunk that any fixture feature can occupy
         // and verify no saddle-triangle debug_assert fires. This is a
