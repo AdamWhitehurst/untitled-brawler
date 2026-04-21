@@ -79,7 +79,8 @@ pub fn mesh_chunk_sloped<S: Shape<3, Coord = u32>>(
     let heights = column_heights(voxels, shape);
     let surface_heights = column_surface_heights(voxels, shape);
     let materials = column_materials(voxels, shape);
-    let tops = classify_columns(&heights, &materials, padded_xz);
+    let mut tops = classify_columns(&heights, &materials, padded_xz);
+    extend_slopes_over_nonplanar(&mut tops, &heights, padded_xz);
 
     let mut buf = MeshBuffers::new();
     emit_planar_tops(&tops, padded_xz, &mut buf);
@@ -172,6 +173,98 @@ fn column_materials<S: Shape<3, Coord = u32>>(voxels: &[WorldVoxel], shape: &S) 
         }
     }
     materials
+}
+
+/// Extend a Planar slope into neighboring NonPlanar columns whose own
+/// top-face-y lies on the slope's plane. The corner-max rule classifies a
+/// column as NonPlanar whenever any corner lies on a cliff (delta ≥ 2). At
+/// the z-edge of a staircase, for example, columns inside the staircase see
+/// a cliff south (to non-staircase) and get NonPlanar corners like
+/// `[3, 4, 3, 3]` — the `c11` corner is pulled down to own_h by the cliff
+/// rule. But the column's own top lies ON the slope's plane, so rendering
+/// it as part of the slope (rather than as an individual hip wedge)
+/// produces a continuous ramp. Walls at the cliff side still emit via
+/// `classify_edge_*`, filling the drop to the flat.
+fn extend_slopes_over_nonplanar(
+    tops: &mut Vec<Option<ColumnTop>>,
+    heights: &[i32],
+    padded_xz: usize,
+) {
+    loop {
+        let mut changed = false;
+        for px in 1..padded_xz - 1 {
+            for pz in 1..padded_xz - 1 {
+                let is_nonplanar =
+                    matches!(tops[px * padded_xz + pz], Some(ColumnTop::NonPlanar { .. }));
+                if !is_nonplanar {
+                    continue;
+                }
+                let own_h = heights[px * padded_xz + pz];
+                let material = match tops[px * padded_xz + pz] {
+                    Some(ColumnTop::NonPlanar { material, .. }) => material,
+                    _ => continue,
+                };
+                // Check 4 cardinal neighbors for a Planar slope whose plane
+                // passes through own_h at (px, pz).
+                let mut adopt: Option<(i32, i32, i32)> = None;
+                for (dx, dz) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                    let nx = px as i32 + dx;
+                    let nz = pz as i32 + dz;
+                    if nx < 1 || nx >= padded_xz as i32 - 1 || nz < 1 || nz >= padded_xz as i32 - 1
+                    {
+                        continue;
+                    }
+                    let Some(ColumnTop::Planar {
+                        gradient_x: gx,
+                        gradient_z: gz,
+                        intercept,
+                        material: n_mat,
+                        ..
+                    }) = tops[nx as usize * padded_xz + nz as usize]
+                    else {
+                        continue;
+                    };
+                    if n_mat != material {
+                        continue;
+                    }
+                    // Only extend SLOPES, not flat planes — extending a flat
+                    // plane into a NonPlanar column would erase the hip
+                    // wedge that visually represents the corner-max
+                    // raised-corner shape (pyramid edges, etc.).
+                    if gx == 0 && gz == 0 {
+                        continue;
+                    }
+                    let plane_y_here = gx * px as i32 + gz * pz as i32 + intercept;
+                    if plane_y_here != own_h {
+                        continue;
+                    }
+                    adopt = Some((gx, gz, intercept));
+                    break;
+                }
+                if let Some((gx, gz, intercept)) = adopt {
+                    let px_i = px as i32;
+                    let pz_i = pz as i32;
+                    let corners = [
+                        gx * px_i + gz * pz_i + intercept,
+                        gx * (px_i + 1) + gz * pz_i + intercept,
+                        gx * px_i + gz * (pz_i + 1) + intercept,
+                        gx * (px_i + 1) + gz * (pz_i + 1) + intercept,
+                    ];
+                    tops[px * padded_xz + pz] = Some(ColumnTop::Planar {
+                        corners,
+                        gradient_x: gx,
+                        gradient_z: gz,
+                        intercept,
+                        material,
+                    });
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 /// Pass 2: classify each interior column by corner coplanarity.
@@ -494,9 +587,11 @@ impl From<WallRect> for WallQuad {
     }
 }
 
+#[allow(dead_code)] // `Triangle` retained for future saddle-wall support
 enum WallEmission {
     Skip,
-    /// Saddle edge: one end flush, the other stepped. 3 vertices, flat normal.
+    /// Saddle edge (no longer emitted; kept for future re-introduction if a
+    /// corner rule emerges that produces true 1-mismatch saddles).
     Triangle {
         vertices: [[f32; 3]; 3],
     },
@@ -569,48 +664,15 @@ fn classify_edge_x(
     px: usize,
     pz: usize,
 ) -> WallEmission {
-    let top_a = heights[px * padded_xz + pz];
-    let top_b = heights[(px + 1) * padded_xz + pz];
-    let surf_a = surface_heights[px * padded_xz + pz];
-    let surf_b = surface_heights[(px + 1) * padded_xz + pz];
-    if surf_a == SENTINEL_NO_SURFACE || surf_b == SENTINEL_NO_SURFACE {
-        return WallEmission::Skip;
-    }
-    if top_a != SENTINEL_NO_SURFACE && top_b != SENTINEL_NO_SURFACE {
-        let (a10, a11) = east_edge_pair(heights, padded_xz, px, pz);
-        let (b00, b01) = west_edge_pair(heights, padded_xz, px + 1, pz);
-        let lo_match = a10 == b00;
-        let hi_match = a11 == b01;
-        match (lo_match, hi_match) {
-            (true, true) => WallEmission::Skip,
-            // Flush at lo-z (a10 == b00); step at hi-z (a11 vs b01 differ).
-            (true, false) => make_triangle_wall_x(px, pz, a10, a11, b01, true),
-            // Flush at hi-z (a11 == b01); step at lo-z (a10 vs b00 differ).
-            (false, true) => make_triangle_wall_x(px, pz, a11, a10, b00, false),
-            (false, false) => WallEmission::Rectangle(WallRect {
-                axis: EdgeAxis::X,
-                base_px: px,
-                base_pz: pz,
-                axis_len: 1,
-                y_lo: a10.min(a11).min(b00).min(b01),
-                y_hi: a10.max(a11).max(b00).max(b01),
-                normal_positive: a10.max(a11) >= b00.max(b01),
-            }),
-        }
-    } else {
-        if surf_a == surf_b {
-            return WallEmission::Skip;
-        }
-        WallEmission::Rectangle(WallRect {
-            axis: EdgeAxis::X,
-            base_px: px,
-            base_pz: pz,
-            axis_len: 1,
-            y_lo: surf_a.min(surf_b),
-            y_hi: surf_a.max(surf_b),
-            normal_positive: surf_a >= surf_b,
-        })
-    }
+    classify_edge_by_own_heights(
+        heights[px * padded_xz + pz],
+        heights[(px + 1) * padded_xz + pz],
+        surface_heights[px * padded_xz + pz],
+        surface_heights[(px + 1) * padded_xz + pz],
+        EdgeAxis::X,
+        px,
+        pz,
+    )
 }
 
 fn classify_edge_z(
@@ -620,48 +682,62 @@ fn classify_edge_z(
     px: usize,
     pz: usize,
 ) -> WallEmission {
-    let top_a = heights[px * padded_xz + pz];
-    let top_b = heights[px * padded_xz + pz + 1];
-    let surf_a = surface_heights[px * padded_xz + pz];
-    let surf_b = surface_heights[px * padded_xz + pz + 1];
+    classify_edge_by_own_heights(
+        heights[px * padded_xz + pz],
+        heights[px * padded_xz + pz + 1],
+        surface_heights[px * padded_xz + pz],
+        surface_heights[px * padded_xz + pz + 1],
+        EdgeAxis::Z,
+        px,
+        pz,
+    )
+}
+
+/// Emit a wall rectangle sized from the two columns' OWN top-face-y values.
+/// Earlier revisions used corner values (from `corner_rule`), but that gave a
+/// saddle triangle that covered only half the physically-exposed face when
+/// one column's corner was pulled up by an adjacent slope — producing holes.
+/// Using own heights always gives a full rectangle matching the actual
+/// voxel exposure.
+///
+/// Slope-interior walls (where delta=1 between columns that ARE on the same
+/// Planar slope) do emit rectangles too; they live below the slope's top
+/// surface and are invisible from outside the solid. The tilt-merger later
+/// combines adjacent gradient-1 rectangles into tilted quads.
+fn classify_edge_by_own_heights(
+    top_a: i32,
+    top_b: i32,
+    surf_a: i32,
+    surf_b: i32,
+    axis: EdgeAxis,
+    px: usize,
+    pz: usize,
+) -> WallEmission {
     if surf_a == SENTINEL_NO_SURFACE || surf_b == SENTINEL_NO_SURFACE {
         return WallEmission::Skip;
     }
-    if top_a != SENTINEL_NO_SURFACE && top_b != SENTINEL_NO_SURFACE {
-        let (a01, a11) = south_edge_pair(heights, padded_xz, px, pz);
-        let (b00, b10) = north_edge_pair(heights, padded_xz, px, pz + 1);
-        let lo_match = a01 == b00;
-        let hi_match = a11 == b10;
-        match (lo_match, hi_match) {
-            (true, true) => WallEmission::Skip,
-            // Flush at lo-x (a01 == b00); step at hi-x (a11 vs b10 differ).
-            (true, false) => make_triangle_wall_z(px, pz, a01, a11, b10, true),
-            // Flush at hi-x (a11 == b10); step at lo-x (a01 vs b00 differ).
-            (false, true) => make_triangle_wall_z(px, pz, a11, a01, b00, false),
-            (false, false) => WallEmission::Rectangle(WallRect {
-                axis: EdgeAxis::Z,
-                base_px: px,
-                base_pz: pz,
-                axis_len: 1,
-                y_lo: a01.min(a11).min(b00).min(b10),
-                y_hi: a01.max(a11).max(b00).max(b10),
-                normal_positive: a01.max(a11) >= b00.max(b10),
-            }),
-        }
+    let h_a = if top_a != SENTINEL_NO_SURFACE {
+        top_a
     } else {
-        if surf_a == surf_b {
-            return WallEmission::Skip;
-        }
-        WallEmission::Rectangle(WallRect {
-            axis: EdgeAxis::Z,
-            base_px: px,
-            base_pz: pz,
-            axis_len: 1,
-            y_lo: surf_a.min(surf_b),
-            y_hi: surf_a.max(surf_b),
-            normal_positive: surf_a >= surf_b,
-        })
+        surf_a
+    };
+    let h_b = if top_b != SENTINEL_NO_SURFACE {
+        top_b
+    } else {
+        surf_b
+    };
+    if h_a == h_b {
+        return WallEmission::Skip;
     }
+    WallEmission::Rectangle(WallRect {
+        axis,
+        base_px: px,
+        base_pz: pz,
+        axis_len: 1,
+        y_lo: h_a.min(h_b),
+        y_hi: h_a.max(h_b),
+        normal_positive: h_a >= h_b,
+    })
 }
 
 /// Build a saddle triangle for a +x edge. `step_high_z` = true means the
@@ -1260,16 +1336,22 @@ mod tests {
             .unwrap()
             .as_float3()
             .unwrap();
-        // A pyramid hip triangle's normal has BOTH x AND z components nonzero
-        // (diagonal tilt). Planar slopes only tilt along one axis.
-        let diag_tilted = normals
+        // Pyramid hip triangles on NonPlanar cols emit normals of the form
+        // (±0.707, 0.707, 0) or (0, 0.707, ±0.707) — tilted in y plus one
+        // horizontal axis. If these are absent, hip classification broke.
+        let hip_count = normals
             .iter()
-            .filter(|n| n[0].abs() > 0.1 && n[1].abs() > 0.1 && n[2].abs() > 0.1)
+            .filter(|n| {
+                let y_half = (n[1] - 0.7071).abs() < 0.02;
+                let x_tilt = (n[0].abs() - 0.7071).abs() < 0.02 && n[2].abs() < 0.02;
+                let z_tilt = n[0].abs() < 0.02 && (n[2].abs() - 0.7071).abs() < 0.02;
+                y_half && (x_tilt || z_tilt)
+            })
             .count();
         assert!(
-            diag_tilted > 0,
-            "pyramid hip should emit diagonally-tilted normals (got {} of {})",
-            diag_tilted,
+            hip_count > 0,
+            "pyramid should emit hip-triangle normals (got {} of {})",
+            hip_count,
             normals.len()
         );
     }
@@ -1446,12 +1528,13 @@ mod tests {
                     && (p[2] - target[2]).abs() < 0.01
             })
         };
-        // The merged rect in chunk mesh coords: px_min=9, px_max=15,
-        // pz_min=1, pz_max=4. x1=9, x2=16, z1=1, z2=5. y range 2..9.
+        // After fix-2 slope extension over NonPlanar cols at pz=5, the main
+        // rect's south edge extends to mesh z=6. Merged rect: px_min=9,
+        // px_max=15, pz_min=1, pz_max=5. x1=9, x2=16, z1=1, z2=6.
         assert!(has_pos([9.0, 2.0, 1.0]), "main rect p00 missing");
         assert!(has_pos([16.0, 9.0, 1.0]), "main rect p10 missing");
-        assert!(has_pos([16.0, 9.0, 5.0]), "main rect p11 missing");
-        assert!(has_pos([9.0, 2.0, 5.0]), "main rect p01 missing");
+        assert!(has_pos([16.0, 9.0, 6.0]), "main rect p11 missing");
+        assert!(has_pos([9.0, 2.0, 6.0]), "main rect p01 missing");
     }
 
     #[test]
