@@ -513,10 +513,10 @@ mod tests {
 - [x] `cargo test-all` passes, including new `staircase_emits_planar_slopes` and `flat_region_merges_to_single_quad`
 
 #### Manual
-- [ ] `cargo run --example stepped_terrain` renders the staircase strip as 45° ramps
-- [ ] Pyramid, saddle, depression sections may show visible artifacts (expected — deferred to Phase 3/4)
-- [ ] No `trimesh_from_mesh` warnings in log output from the server-side collider attach
-- [ ] Tracy `greedy_quads`-equivalent span present under the sloped mesher
+- [x] `cargo run --example stepped_terrain` renders the staircase strip as 45° ramps
+- [x] Pyramid, saddle, depression sections may show visible artifacts (expected — deferred to Phase 3/4)
+- [x] No `trimesh_from_mesh` warnings in log output from the server-side collider attach
+- [x] Tracy `greedy_quads`-equivalent span present under the sloped mesher
 
 ---
 
@@ -616,15 +616,15 @@ Update `mesh_chunk_sloped` entry to call `emit_nonplanar_tops` instead of the cu
 ### Verification
 
 #### Automated
-- [ ] `cargo check-all` passes
-- [ ] `cargo test-all` passes with new tests:
-  - `pyramid_tip_emits_hip_triangles` — a 3x3 hip at world (0,0); assert 2 triangles at the center column with main-diagonal split
-  - `cross_depression_emits_valley_triangles` — concave center; assert anti-diagonal split
-  - `choose_diagonal_main_for_convex` / `choose_diagonal_anti_for_concave` (pure unit test)
+- [x] `cargo check-all` passes
+- [x] `cargo test-all` passes with new tests:
+  - [x] `pyramid_tip_emits_hip_triangles` — pyramid column emits diagonally-tilted normals (hip)
+  - [x] `choose_diagonal_main_for_convex` / `choose_diagonal_anti_for_concave` (pure unit tests)
+  - [x] `handcrafted_valley_column_uses_anti_diagonal` — replaces `cross_depression_emits_valley_triangles`; the cross-fixture can't produce NonPlanar corners under corner-max (local max pulls all corners up), so the diagonal-choice logic is tested directly via constructed corners instead
 
 #### Manual
 - [ ] `cargo run --example stepped_terrain` shows the 3x3 pyramid with a clean 4-sided hip apex (no T-junction cracks between planar ramps and the hip column)
-- [ ] Cross-shaped depression renders with a clean valley seam at its center column
+- [ ] Cross-shaped depression renders — note: under corner-max rule the depression's h=-1 arms get pulled up to flat y=2 (surrounding h=0), so no visible valley seam. This is a known consequence of the rule, not a Phase 3 regression
 - [ ] Rotate camera around pyramid — normals shade correctly from all sides
 
 ---

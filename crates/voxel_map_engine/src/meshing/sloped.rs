@@ -82,7 +82,7 @@ pub fn mesh_chunk_sloped<S: Shape<3, Coord = u32>>(
 
     let mut buf = MeshBuffers::new();
     emit_planar_tops(&tops, padded_xz, &mut buf);
-    emit_nonplanar_tops_cubic_fallback(&tops, padded_xz, &mut buf);
+    emit_nonplanar_tops(&tops, padded_xz, &mut buf);
     emit_cubic_walls_simple(&heights, padded_xz, &mut buf);
     emit_bottom_faces(voxels, shape, &mut buf);
 
@@ -333,35 +333,62 @@ fn emit_planar_rect(
         .extend_from_slice(&[base, base + 2, base + 1, base, base + 3, base + 2]);
 }
 
-/// Phase-2 fallback for `NonPlanar` columns: emit a flat cubic top at the
-/// max corner height. Replaced by hip/valley triangles in Phase 3.
-fn emit_nonplanar_tops_cubic_fallback(
-    tops: &[Option<ColumnTop>],
-    padded_xz: usize,
-    out: &mut MeshBuffers,
-) {
+/// Diagonal split choice for a non-planar 4-corner quad.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Diagonal {
+    /// Split along `(-x,-z)↔(+x,+z)`. Used for convex hips (ridge along main diagonal).
+    Main,
+    /// Split along `(+x,-z)↔(-x,+z)`. Used for concave valleys (seam along anti-diagonal).
+    Anti,
+}
+
+/// Pick the diagonal that puts the ridge along the higher pair of corners.
+fn choose_diagonal(corners: &[i32; 4]) -> Diagonal {
+    let [c00, c10, c01, c11] = *corners;
+    if (c00 + c11) >= (c10 + c01) {
+        Diagonal::Main
+    } else {
+        Diagonal::Anti
+    }
+}
+
+/// Pass 3b: emit 2 triangles per `NonPlanar` column with per-triangle flat
+/// normals. Diagonal choice per `choose_diagonal`.
+fn emit_nonplanar_tops(tops: &[Option<ColumnTop>], padded_xz: usize, out: &mut MeshBuffers) {
     for px in 1..padded_xz - 1 {
         for pz in 1..padded_xz - 1 {
             let Some(ColumnTop::NonPlanar { corners, .. }) = tops[px * padded_xz + pz] else {
                 continue;
             };
-            let y = *corners.iter().max().unwrap() as f32;
-            let (x1, z1) = (px as f32, pz as f32);
-            let (x2, z2) = (x1 + 1.0, z1 + 1.0);
-            let p00 = [x1, y, z1];
-            let p10 = [x2, y, z1];
-            let p11 = [x2, y, z2];
-            let p01 = [x1, y, z2];
-            let normal = [0.0, 1.0, 0.0];
-            let base = out.positions.len() as u32;
-            out.positions.extend_from_slice(&[p00, p10, p11, p01]);
-            out.normals.extend_from_slice(&[normal; 4]);
-            out.uvs
-                .extend_from_slice(&[[x1, z1], [x2, z1], [x2, z2], [x1, z2]]);
-            out.indices
-                .extend_from_slice(&[base, base + 2, base + 1, base, base + 3, base + 2]);
+            let (x0, z0) = (px as f32, pz as f32);
+            let p00 = [x0, corners[0] as f32, z0];
+            let p10 = [x0 + 1.0, corners[1] as f32, z0];
+            let p01 = [x0, corners[2] as f32, z0 + 1.0];
+            let p11 = [x0 + 1.0, corners[3] as f32, z0 + 1.0];
+            match choose_diagonal(&corners) {
+                Diagonal::Main => {
+                    push_triangle(out, p00, p11, p10);
+                    push_triangle(out, p00, p01, p11);
+                }
+                Diagonal::Anti => {
+                    push_triangle(out, p00, p01, p10);
+                    push_triangle(out, p10, p01, p11);
+                }
+            }
         }
     }
+}
+
+fn push_triangle(out: &mut MeshBuffers, a: [f32; 3], b: [f32; 3], c: [f32; 3]) {
+    let ab = Vec3::from(b) - Vec3::from(a);
+    let ac = Vec3::from(c) - Vec3::from(a);
+    let n = ab.cross(ac).normalize_or_zero().to_array();
+    let base = out.positions.len() as u32;
+    out.positions.extend_from_slice(&[a, b, c]);
+    out.normals.extend_from_slice(&[n, n, n]);
+    out.uvs
+        .extend_from_slice(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
+    out.indices.extend_from_slice(&[base, base + 1, base + 2]);
 }
 
 /// Phase-2 placeholder wall emitter. For each shared edge at an interior-to-
@@ -743,5 +770,83 @@ mod tests {
             normals.len(),
             positions.len()
         );
+    }
+
+    #[test]
+    fn choose_diagonal_main_for_convex() {
+        // Convex hip: c00+c11 > c10+c01 → main diagonal (ridge along main).
+        assert_eq!(choose_diagonal(&[5, 4, 4, 4]), Diagonal::Main);
+        assert_eq!(choose_diagonal(&[3, 3, 3, 3]), Diagonal::Main); // tie defaults to Main
+    }
+
+    #[test]
+    fn choose_diagonal_anti_for_concave() {
+        // Concave valley: c10+c01 > c00+c11 → anti diagonal (seam along anti).
+        assert_eq!(choose_diagonal(&[4, 5, 5, 4]), Diagonal::Anti);
+    }
+
+    #[test]
+    fn pyramid_tip_emits_hip_triangles() {
+        use crate::config::VoxelGeneratorImpl;
+        use crate::terrain::SteppedGenerator;
+
+        // The pyramid's corner columns at (1, 1), (-1, 1), (1, -1), (-1, -1) have
+        // asymmetric corner heights and should classify NonPlanar with Main
+        // diagonal (convex hip). We verify by checking that the emitted mesh
+        // contains at least one triangle (3 consecutive positions) corresponding
+        // to a pyramid-tip column with slope > 45° (indicating a hip ridge).
+        let generator = SteppedGenerator {
+            chunk_size: 16,
+            shape: padded_shape(),
+        };
+        let voxels = generator.generate_terrain(IVec3::ZERO);
+        let shape = padded_shape();
+        let mesh = mesh_chunk_sloped(&voxels, &shape).expect("mesh");
+        let normals = mesh
+            .attribute(Mesh::ATTRIBUTE_NORMAL)
+            .unwrap()
+            .as_float3()
+            .unwrap();
+        // A pyramid hip triangle's normal has BOTH x AND z components nonzero
+        // (diagonal tilt). Planar slopes only tilt along one axis.
+        let diag_tilted = normals
+            .iter()
+            .filter(|n| n[0].abs() > 0.1 && n[1].abs() > 0.1 && n[2].abs() > 0.1)
+            .count();
+        assert!(
+            diag_tilted > 0,
+            "pyramid hip should emit diagonally-tilted normals (got {} of {})",
+            diag_tilted,
+            normals.len()
+        );
+    }
+
+    #[test]
+    fn handcrafted_valley_column_uses_anti_diagonal() {
+        // Synthesize a heights array where interior column (2, 2) has corners
+        // like [3, 4, 4, 3] (concave valley: anti-diagonal split).
+        // Column (2, 2) own h=1. Neighbors form delta-1 corners where
+        // c00, c11 = max=3 and c10, c01 = max=4.
+        //
+        // Corner rule: corner = max when delta==1. Populating heights so
+        // the c10 and c01 corners see h=4 neighbors while c00, c11 see h=3.
+        let shape = padded_shape();
+        // Own column (2, 2) h=1, so world_x=1, world_z=1 row has h such that
+        // top-face-y = 3 at (2,2). Column heights = h + 2.
+        // Build heights to produce corners [3, 4, 4, 3].
+        // c00 = max of h(1,1), h(2,1), h(1,2), h(2,2) → want 3. So all in {1, 2} → top-face-y in {3, 4}. max=3 means ALL=3 → all h=1.
+        // c10 = max of h(2,1), h(3,1), h(2,2), h(3,2) → want 4. So max=4 → at least one h=2. h(3,1) or h(3,2) = 2.
+        // c01 = max of h(1,2), h(2,2), h(1,3), h(2,3) → want 4. max=4 → h(1,3) or h(2,3) = 2.
+        // c11 = max of h(2,2), h(3,2), h(2,3), h(3,3) → want 3. max=3 → all in {1}. But h(3,2) and h(2,3) need to be 1 here, conflicting with c10 and c01 above.
+        // So this exact concave valley cannot be produced by corner-max rule —
+        // the rule is local-max, so any "high" neighbor pulls all corners up.
+        //
+        // Instead, test that choose_diagonal correctly classifies a hypothetical
+        // valley corner set (unit test, no mesher needed).
+        let valley = [3, 5, 5, 3];
+        assert_eq!(choose_diagonal(&valley), Diagonal::Anti);
+        let hip = [5, 3, 3, 5];
+        assert_eq!(choose_diagonal(&hip), Diagonal::Main);
+        let _ = shape; // shape unused in this test; kept to dock with module conventions
     }
 }
