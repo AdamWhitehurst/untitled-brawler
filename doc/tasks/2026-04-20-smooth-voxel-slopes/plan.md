@@ -997,6 +997,90 @@ Expected post-fix classifications:
 
 ---
 
+## Phase 4.8: Y-Boundary Slope Continuity
+
+### Problem
+
+Slopes vanish where a 1-unit height transition crosses a chunk Y boundary. `column_heights` scans only the interior padded rows (`py ∈ [1, sy-2]`). A column whose voxel column extends up through the top padding (`py = sy-1` solid) never finds a top face in this chunk and returns `SENTINEL_NO_SURFACE`. In the adjacent chunk below, the same column's top face is at or beyond the top padding, also returning `SENTINEL`. When `classify_columns` computes corners for a neighbor of such a column, the `SENTINEL` routes through `corner_rule`'s SENTINEL branch (treat as cliff) → the corner is pulled to `own_h` → no slope rendered.
+
+Screenshot: cells that should slope at the `world_y=cy*chunk_size` boundary render as cubic stair-steps (red circles), while cells 1 row below on the same feature render as beveled slopes (white circle).
+
+### Fix
+
+Extend the padded-column heights scan to carry cross-chunk awareness via virtual heights:
+
+- **Column extends above** (top interior solid AND top padding solid): return virtual `sy`. Interpreted as "top face at or above `sy`" — one unit above the top interior row.
+- **Column's top face at bottom padding boundary** (already handled by `column_surface_heights`): return `1`. Already correct.
+
+`classify_columns` and `extend_slopes_over_nonplanar` start using these extended heights for neighbor lookups. The emission gate (skip cells whose top is not owned by this chunk) continues to use the interior-only `column_heights`.
+
+### Changes
+
+#### 1. Extend `column_surface_heights`
+**File**: `crates/voxel_map_engine/src/meshing/sloped.rs`
+**Action**: modify
+
+```rust
+fn column_surface_heights<S: Shape<3, Coord = u32>>(voxels: &[WorldVoxel], shape: &S) -> Vec<i32> {
+    // ...
+    // NEW: detect columns that extend through the top padding; set virtual sy.
+    let top_pad_idx = shape.linearize([px, sy - 1, pz]) as usize;
+    let top_interior_idx = shape.linearize([px, sy - 2, pz]) as usize;
+    if matches!(voxels[top_pad_idx], WorldVoxel::Solid(_))
+        && matches!(voxels[top_interior_idx], WorldVoxel::Solid(_))
+    {
+        heights[(px * sz + pz) as usize] = sy as i32;
+        continue;
+    }
+    // Existing interior + bottom-padding scan follows.
+}
+```
+
+#### 2. Thread `surface_heights` through `classify_columns`
+**File**: same
+**Action**: modify
+
+Add a `surface_heights: &[i32]` parameter. Use it for `is_true_pit` and `compute_corners` neighbor lookups. Keep the existing `heights` parameter for the emission gate.
+
+#### 3. Thread through `extend_slopes_over_nonplanar`
+**File**: same
+**Action**: modify
+
+Rename the `heights` parameter to `surface_heights` (it feeds `corner_neighborhood_heights` which must see cross-chunk neighbors).
+
+#### 4. Update `mesh_chunk_sloped`
+**File**: same
+**Action**: modify
+
+Pass `surface_heights` to both `classify_columns` and `extend_slopes_over_nonplanar`.
+
+#### 5. Fixture: Y-boundary staircase
+**File**: `crates/voxel_map_engine/src/terrain.rs`
+**Action**: modify `stepped_surface_height`
+
+Add a staircase that spans world_y 14..19 — so `h=16`, `17`, `18` columns cross the `cy=0 ↔ cy=1` boundary at `world_y=16`.
+
+```rust
+// Y-boundary slope: staircase rising through world_y=16 chunk boundary.
+// x ∈ [-28, -23], z ∈ [-18, -15]; h = x + 42 gives heights 14..19.
+if (-28..=-23).contains(&x) && (-18..=-15).contains(&z) {
+    return x + 42;
+}
+```
+
+### Verification
+
+#### Automated
+- [x] `cargo check-all` passes
+- [x] `cargo test -p voxel_map_engine --lib` passes (136/136) with existing tests unchanged
+- [x] New `y_boundary_staircase_slope_lifts_corners` asserts the cell at world `(-27, -17)` classifies Planar `[17, 18, 17, 18]` (gx=1, gz=0) — c10/c11 lifted by the +x neighbor's virtual `sy` height
+
+#### Manual
+- [ ] `cargo run --example stepped_terrain` — navigate to world `(-28..-23, -18..-15)`; confirm the Y-boundary staircase renders as a smooth 1-unit-per-step slope crossing world_y=16 (no cubic stair-step at the chunk boundary between world_y=15 and world_y=16)
+- [ ] Overworld map: slopes along natural elevation transitions that cross chunk Y boundaries now render as smooth 45° faces instead of cubic steps (the red-circled cells in image #26)
+
+---
+
 ## Phase 5: Cross-Chunk Continuity + Integration Validation
 
 ### Changes

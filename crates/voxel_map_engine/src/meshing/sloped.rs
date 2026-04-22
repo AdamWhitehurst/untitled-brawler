@@ -79,8 +79,8 @@ pub fn mesh_chunk_sloped<S: Shape<3, Coord = u32>>(
     let heights = column_heights(voxels, shape);
     let surface_heights = column_surface_heights(voxels, shape);
     let materials = column_materials(voxels, shape);
-    let mut tops = classify_columns(&heights, &materials, padded_xz);
-    extend_slopes_over_nonplanar(&mut tops, &heights, padded_xz);
+    let mut tops = classify_columns(&heights, &surface_heights, &materials, padded_xz);
+    extend_slopes_over_nonplanar(&mut tops, &surface_heights, padded_xz);
 
     let mut buf = MeshBuffers::new();
     emit_planar_tops(&tops, padded_xz, &mut buf);
@@ -122,18 +122,35 @@ fn column_heights<S: Shape<3, Coord = u32>>(voxels: &[WorldVoxel], shape: &S) ->
     heights
 }
 
-/// Like [`column_heights`] but also considers the bottom padding voxel
-/// (`py = 0`). For a depression whose floor voxel lives in the chunk BELOW,
-/// that chunk's top is visible in our padding row — so surrounding columns
-/// in THIS chunk need a wall down to that level. The chunk below still owns
-/// the top face (which is why top emission keeps using `column_heights`);
-/// this array is only consulted by the wall emitter.
+/// Extended top-face-y scan used by the wall emitter AND by
+/// [`classify_columns`] / [`extend_slopes_over_nonplanar`] for cross-chunk
+/// corner-rule inputs. Covers three cases beyond the interior-only
+/// [`column_heights`]:
+///
+/// - Bottom padding (`py = 0` solid, `py = 1` air): top face at `padded y = 1`
+///   — the chunk BELOW owns the top but it's visible in our padding row, so
+///   surrounding columns need a wall / slope reference down to that level.
+/// - Top padding solid AND top interior solid: column extends through this
+///   chunk into the chunk ABOVE. Virtual height `sy` encodes "top face at or
+///   beyond `py = sy`", one unit above the top interior row. Lets corner-rule
+///   detect a 1-unit slope between a column that tops out at `py = sy-2` and
+///   a neighbor that extends upward, instead of the previous SENTINEL →
+///   cliff path that suppressed Y-boundary slopes.
+/// - Otherwise, same as `column_heights`.
 fn column_surface_heights<S: Shape<3, Coord = u32>>(voxels: &[WorldVoxel], shape: &S) -> Vec<i32> {
     let dims = shape.as_array();
     let (sx, sy, sz) = (dims[0], dims[1], dims[2]);
     let mut heights = vec![SENTINEL_NO_SURFACE; (sx * sz) as usize];
     for px in 0..sx {
         for pz in 0..sz {
+            let top_pad_idx = shape.linearize([px, sy - 1, pz]) as usize;
+            let top_interior_idx = shape.linearize([px, sy - 2, pz]) as usize;
+            if matches!(voxels[top_pad_idx], WorldVoxel::Solid(_))
+                && matches!(voxels[top_interior_idx], WorldVoxel::Solid(_))
+            {
+                heights[(px * sz + pz) as usize] = sy as i32;
+                continue;
+            }
             for py in (0..=sy - 2).rev() {
                 let idx = shape.linearize([px, py, pz]) as usize;
                 if !matches!(voxels[idx], WorldVoxel::Solid(_)) {
@@ -329,8 +346,18 @@ fn extend_slopes_over_nonplanar(
     }
 }
 
-/// Pass 2: classify each interior column by corner coplanarity.
-fn classify_columns(heights: &[i32], materials: &[u8], padded_xz: usize) -> Vec<Option<ColumnTop>> {
+/// Pass 2: classify each interior column by corner coplanarity. `heights` is
+/// interior-only and gates emission (skip cells whose top isn't owned by this
+/// chunk). `surface_heights` (from [`column_surface_heights`]) feeds the
+/// corner-rule neighbor lookups so a column whose neighbor extends into an
+/// adjacent chunk sees the neighbor's cross-chunk virtual height instead of
+/// a SENTINEL cliff.
+fn classify_columns(
+    heights: &[i32],
+    surface_heights: &[i32],
+    materials: &[u8],
+    padded_xz: usize,
+) -> Vec<Option<ColumnTop>> {
     let mut out = vec![None; padded_xz * padded_xz];
     for px in 1..padded_xz - 1 {
         for pz in 1..padded_xz - 1 {
@@ -338,8 +365,8 @@ fn classify_columns(heights: &[i32], materials: &[u8], padded_xz: usize) -> Vec<
             if h == SENTINEL_NO_SURFACE {
                 continue;
             }
-            let is_pit = is_true_pit(heights, padded_xz, px, pz, h);
-            let corners = compute_corners(heights, padded_xz, px, pz, h, is_pit);
+            let is_pit = is_true_pit(surface_heights, padded_xz, px, pz, h);
+            let corners = compute_corners(surface_heights, padded_xz, px, pz, h, is_pit);
             let material = materials[px * padded_xz + pz];
             out[px * padded_xz + pz] = Some(match plane_fit(corners, px as i32, pz as i32) {
                 Some((gradient_x, gradient_z, intercept)) => ColumnTop::Planar {
@@ -1694,9 +1721,10 @@ mod tests {
         let shape = padded_shape();
         let padded_xz = shape.as_array()[0] as usize;
         let heights = column_heights(&voxels, &shape);
+        let surface_heights = column_surface_heights(&voxels, &shape);
         let materials = column_materials(&voxels, &shape);
-        let mut tops = classify_columns(&heights, &materials, padded_xz);
-        extend_slopes_over_nonplanar(&mut tops, &heights, padded_xz);
+        let mut tops = classify_columns(&heights, &surface_heights, &materials, padded_xz);
+        extend_slopes_over_nonplanar(&mut tops, &surface_heights, padded_xz);
         (tops, padded_xz)
     }
 
@@ -1840,8 +1868,9 @@ mod tests {
         let shape = padded_shape();
         let padded_xz = shape.as_array()[0] as usize;
         let heights = column_heights(&voxels, &shape);
+        let surface_heights = column_surface_heights(&voxels, &shape);
         let materials = column_materials(&voxels, &shape);
-        let tops = classify_columns(&heights, &materials, padded_xz);
+        let tops = classify_columns(&heights, &surface_heights, &materials, padded_xz);
         let top = tops[13 * padded_xz + 9];
         assert!(
             matches!(
@@ -1874,8 +1903,9 @@ mod tests {
         let shape = padded_shape();
         let padded_xz = shape.as_array()[0] as usize;
         let heights = column_heights(&voxels, &shape);
+        let surface_heights = column_surface_heights(&voxels, &shape);
         let materials = column_materials(&voxels, &shape);
-        let tops = classify_columns(&heights, &materials, padded_xz);
+        let tops = classify_columns(&heights, &surface_heights, &materials, padded_xz);
         let top = tops[13 * padded_xz + 15];
         assert!(
             matches!(
@@ -1888,6 +1918,57 @@ mod tests {
                 })
             ),
             "1-cell pit at world (-20, -2) should classify Planar flat [2, 2, 2, 2], got {:?}",
+            top
+        );
+    }
+
+    /// Y-boundary staircase in SteppedGenerator rises 1 per unit in +x from
+    /// world_x=-28 (h=14) to -23 (h=19) at z ∈ [-18, -15]. Heights 16..19
+    /// place their top voxels in chunk cy=1; chunk cy=0 only sees their
+    /// extended voxel column. Pre-4.8 the h=16 column's surface_heights was
+    /// SENTINEL in chunk cy=0 → neighbors' c10/c11 cliff-pulled → the slope
+    /// between h=15 and h=16 (crossing world_y=16) vanished as a cubic step.
+    /// Post-4.8 the extending column gets a virtual height of `sy` (18 for
+    /// padded_xz=18), producing a proper Planar slope.
+    ///
+    /// Cell at world (-27, -17) — h=15, own_h stored as 17 — should classify
+    /// Planar with corners [17, 18, 17, 18] (gx=1, gz=0): c10/c11 lifted to
+    /// 18 by the +x neighbor's virtual height.
+    #[test]
+    fn y_boundary_staircase_slope_lifts_corners() {
+        use crate::config::VoxelGeneratorImpl;
+        use crate::terrain::SteppedGenerator;
+
+        let generator = SteppedGenerator {
+            chunk_size: 16,
+            shape: padded_shape(),
+        };
+        // world (-27, -17) → chunk (-2, 0, -2), padded (6, 16).
+        let voxels = generator.generate_terrain(IVec3::new(-2, 0, -2));
+        let shape = padded_shape();
+        let padded_xz = shape.as_array()[0] as usize;
+        let heights = column_heights(&voxels, &shape);
+        let surface_heights = column_surface_heights(&voxels, &shape);
+        let materials = column_materials(&voxels, &shape);
+
+        // Sanity: the +x neighbor column (h=16, top voxel at world_y=16 in
+        // chunk cy=1) extends through chunk cy=0 — its surface_heights should
+        // be the virtual `sy` value.
+        assert_eq!(surface_heights[7 * padded_xz + 16], 18);
+
+        let tops = classify_columns(&heights, &surface_heights, &materials, padded_xz);
+        let top = tops[6 * padded_xz + 16];
+        assert!(
+            matches!(
+                top,
+                Some(ColumnTop::Planar {
+                    corners: [17, 18, 17, 18],
+                    gradient_x: 1,
+                    gradient_z: 0,
+                    ..
+                })
+            ),
+            "Y-boundary staircase cell at world (-27, -17) should classify Planar [17, 18, 17, 18] gx=1 gz=0, got {:?}",
             top
         );
     }

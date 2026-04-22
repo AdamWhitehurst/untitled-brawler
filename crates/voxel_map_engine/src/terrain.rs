@@ -523,6 +523,8 @@ impl VoxelGeneratorImpl for FlatGenerator {
 ///   corner at cell (-20, -8) that currently classifies as a saddle
 /// - 1-cell pit at (-20, -2) carved into a surrounding h=1 plateau; all 8
 ///   neighbors higher, so the pit-preservation rule should keep it flat
+/// - Y-boundary staircase at x=-28..=-23, z=-18..=-15 with heights 14..19
+///   crossing the chunk Y=16 boundary; exercises cross-chunk slope rendering
 pub struct SteppedGenerator {
     pub chunk_size: u32,
     pub shape: RuntimeShape<u32, 3>,
@@ -589,6 +591,14 @@ fn stepped_surface_height(x: i32, z: i32) -> i32 {
         || ((-24..=-21).contains(&x) && (-9..=-7).contains(&z))
     {
         return 1;
+    }
+    // Y-boundary staircase: heights 14..19 crossing the cy=0↔cy=1 boundary at
+    // world_y=16. At wx=-28, h=14; wx=-27, h=15; wx=-26, h=16; wx=-25, h=17;
+    // wx=-24, h=18; wx=-23, h=19. The slope between wx=-27 and wx=-26 sits on
+    // the chunk Y boundary — pre-4.8 the slope vanished because column_heights
+    // never saw the neighbor column's top (it was in the chunk above).
+    if (-28..=-23).contains(&x) && (-18..=-15).contains(&z) {
+        return x + 42;
     }
     0
 }
