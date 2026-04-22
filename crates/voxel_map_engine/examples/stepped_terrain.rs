@@ -14,6 +14,11 @@ fn main() {
 }
 
 fn setup(mut commands: Commands) {
+    info!(
+        "stepped_terrain controls: WASD move | Space up | Shift down | \
+         Q/E yaw left/right | T teleport above Y-boundary staircase"
+    );
+
     let mut instance = VoxelMapInstance::new(5, 16);
     instance.debug_colors = true;
 
@@ -82,5 +87,20 @@ fn move_camera(
     }
     if keys.pressed(KeyCode::ShiftLeft) {
         transform.translation.y -= speed;
+    }
+
+    let yaw_speed = 1.5 * time.delta_secs();
+    if keys.pressed(KeyCode::KeyQ) {
+        transform.rotate_y(yaw_speed);
+    }
+    if keys.pressed(KeyCode::KeyE) {
+        transform.rotate_y(-yaw_speed);
+    }
+
+    // Teleport above the Y-boundary staircase so its top (world_y up to 19)
+    // is visible from above. Looks down at the staircase center.
+    if keys.just_pressed(KeyCode::KeyT) {
+        *transform = Transform::from_translation(Vec3::new(-25.0, 40.0, -16.0))
+            .looking_at(Vec3::new(-25.0, 17.0, -16.5), Vec3::Y);
     }
 }
