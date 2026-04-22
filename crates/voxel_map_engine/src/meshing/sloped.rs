@@ -85,7 +85,8 @@ pub fn mesh_chunk_sloped<S: Shape<3, Coord = u32>>(
     let mut buf = MeshBuffers::new();
     emit_planar_tops(&tops, padded_xz, &mut buf);
     emit_nonplanar_tops(&tops, padded_xz, &mut buf);
-    emit_walls(&surface_heights, &tops, padded_xz, &mut buf);
+    let padded_size_y = dims[1] as usize;
+    emit_walls(&surface_heights, &tops, padded_xz, padded_size_y, &mut buf);
     emit_bottom_faces(voxels, shape, &mut buf);
 
     if buf.is_empty() {
@@ -753,13 +754,14 @@ fn emit_walls(
     surface_heights: &[i32],
     tops: &[Option<ColumnTop>],
     padded_xz: usize,
+    padded_size_y: usize,
     out: &mut MeshBuffers,
 ) {
     let mut rects: Vec<WallRect> = Vec::new();
 
     for pz in 1..padded_xz - 1 {
         for px in 1..padded_xz - 1 {
-            match classify_edge_x(surface_heights, tops, padded_xz, px, pz) {
+            match classify_edge_x(surface_heights, tops, padded_xz, padded_size_y, px, pz) {
                 WallEmission::Skip => {}
                 WallEmission::Rectangle(rect) => rects.push(rect),
             }
@@ -767,7 +769,7 @@ fn emit_walls(
     }
     for px in 1..padded_xz - 1 {
         for pz in 1..padded_xz - 1 {
-            match classify_edge_z(surface_heights, tops, padded_xz, px, pz) {
+            match classify_edge_z(surface_heights, tops, padded_xz, padded_size_y, px, pz) {
                 WallEmission::Skip => {}
                 WallEmission::Rectangle(rect) => rects.push(rect),
             }
@@ -779,20 +781,42 @@ fn emit_walls(
     }
 }
 
+/// Normalize a column's `surface_heights` value for wall emission:
+///
+/// - SENTINEL → virtual `1` (bottom interior), only valid when the opposite
+///   side of the edge has a real surface. Lets walls render for columns whose
+///   top face lives in a chunk above this one (chunk cy+1 sees the staircase
+///   column's top, but its h=0 neighbor has no voxels in cy+1 → SENTINEL).
+/// - Extends-above virtual `padded_size_y` → cap at `padded_size_y - 1`. The
+///   chunk only owns walls within its padded y range; the chunk above renders
+///   the rest. The unclamped `padded_size_y` value remains in
+///   `surface_heights` for corner-rule slope detection, which needs the
+///   +1 delta to recognize the slope.
+fn normalize_wall_surf(surf: i32, padded_size_y: usize) -> i32 {
+    if surf == SENTINEL_NO_SURFACE {
+        1
+    } else {
+        surf.min(padded_size_y as i32 - 1)
+    }
+}
+
 fn classify_edge_x(
     surface_heights: &[i32],
     tops: &[Option<ColumnTop>],
     padded_xz: usize,
+    padded_size_y: usize,
     px: usize,
     pz: usize,
 ) -> WallEmission {
     let surf_a = surface_heights[px * padded_xz + pz];
     let surf_b = surface_heights[(px + 1) * padded_xz + pz];
-    if surf_a == SENTINEL_NO_SURFACE || surf_b == SENTINEL_NO_SURFACE {
+    if surf_a == SENTINEL_NO_SURFACE && surf_b == SENTINEL_NO_SURFACE {
         return WallEmission::Skip;
     }
-    let ca = column_corners_or_flat(&tops[px * padded_xz + pz], surf_a);
-    let cb = column_corners_or_flat(&tops[(px + 1) * padded_xz + pz], surf_b);
+    let surf_a_eff = normalize_wall_surf(surf_a, padded_size_y);
+    let surf_b_eff = normalize_wall_surf(surf_b, padded_size_y);
+    let ca = column_corners_or_flat(&tops[px * padded_xz + pz], surf_a_eff);
+    let cb = column_corners_or_flat(&tops[(px + 1) * padded_xz + pz], surf_b_eff);
     // +x shared edge: mesh x = px+1, running from (px+1, pz) to (px+1, pz+1).
     // a.c10 at (px+1, pz), a.c11 at (px+1, pz+1).
     // b.c00 at (px+1, pz), b.c01 at (px+1, pz+1).
@@ -803,16 +827,19 @@ fn classify_edge_z(
     surface_heights: &[i32],
     tops: &[Option<ColumnTop>],
     padded_xz: usize,
+    padded_size_y: usize,
     px: usize,
     pz: usize,
 ) -> WallEmission {
     let surf_a = surface_heights[px * padded_xz + pz];
     let surf_b = surface_heights[px * padded_xz + pz + 1];
-    if surf_a == SENTINEL_NO_SURFACE || surf_b == SENTINEL_NO_SURFACE {
+    if surf_a == SENTINEL_NO_SURFACE && surf_b == SENTINEL_NO_SURFACE {
         return WallEmission::Skip;
     }
-    let ca = column_corners_or_flat(&tops[px * padded_xz + pz], surf_a);
-    let cb = column_corners_or_flat(&tops[px * padded_xz + pz + 1], surf_b);
+    let surf_a_eff = normalize_wall_surf(surf_a, padded_size_y);
+    let surf_b_eff = normalize_wall_surf(surf_b, padded_size_y);
+    let ca = column_corners_or_flat(&tops[px * padded_xz + pz], surf_a_eff);
+    let cb = column_corners_or_flat(&tops[px * padded_xz + pz + 1], surf_b_eff);
     // +z shared edge: mesh z = pz+1, running from (px, pz+1) to (px+1, pz+1).
     // a.c01 at (px, pz+1), a.c11 at (px+1, pz+1).
     // b.c00 at (px, pz+1), b.c10 at (px+1, pz+1).
@@ -1970,6 +1997,44 @@ mod tests {
             ),
             "Y-boundary staircase cell at world (-27, -17) should classify Planar [17, 18, 17, 18] gx=1 gz=0, got {:?}",
             top
+        );
+    }
+
+    /// Upper half of the Y-boundary staircase column. In chunk cy=1 the
+    /// staircase's h=19 column has voxels at padded py=1..=4 (world_y 16..=19);
+    /// its south neighbor (h=0) has no voxels in cy=1 at all → SENTINEL
+    /// surface_heights. Pre-fix, classify_edge_z short-circuited on SENTINEL
+    /// and emitted no wall, leaving the staircase column's south face missing
+    /// from world_y=16 upward. Post-fix, the SENTINEL→virtual-1 substitution
+    /// makes chunk cy=1 emit a wall rectangle for this edge. Assert the mesh
+    /// contains a -z-facing wall normal (0, 0, -1) covering the staircase
+    /// column.
+    #[test]
+    fn y_boundary_staircase_upper_chunk_emits_exterior_walls() {
+        use crate::config::VoxelGeneratorImpl;
+        use crate::terrain::SteppedGenerator;
+
+        let generator = SteppedGenerator {
+            chunk_size: 16,
+            shape: padded_shape(),
+        };
+        let voxels = generator.generate_terrain(IVec3::new(-2, 1, -2));
+        let shape = padded_shape();
+        let mesh = mesh_chunk_sloped(&voxels, &shape).expect("mesh");
+        let normals = mesh
+            .attribute(Mesh::ATTRIBUTE_NORMAL)
+            .unwrap()
+            .as_float3()
+            .unwrap();
+        let south_facing = normals
+            .iter()
+            .filter(|n| n[1].abs() < 0.01 && n[0].abs() < 0.01 && (n[2] + 1.0).abs() < 0.01)
+            .count();
+        assert!(
+            south_facing > 0,
+            "chunk cy=1 should emit -z-facing walls for staircase column south faces; got {} of {}",
+            south_facing,
+            normals.len()
         );
     }
 
