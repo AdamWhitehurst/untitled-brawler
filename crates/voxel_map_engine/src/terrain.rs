@@ -519,6 +519,10 @@ impl VoxelGeneratorImpl for FlatGenerator {
 /// - multi-unit cliff (Δ≥2 stays cubic) at (-8, 8)
 /// - reversed staircase at x=16..=23, z=6..=14 (180°-rotated view of the
 ///   main staircase, isolated from other features)
+/// - L-shaped plateau at x=-24..=-18, z=-12..=-7 with an inside concave
+///   corner at cell (-20, -8) that currently classifies as a saddle
+/// - 1-cell pit at (-20, -2) carved into a surrounding h=1 plateau; all 8
+///   neighbors higher, so the pit-preservation rule should keep it flat
 pub struct SteppedGenerator {
     pub chunk_size: u32,
     pub shape: RuntimeShape<u32, 3>,
@@ -569,6 +573,22 @@ fn stepped_surface_height(x: i32, z: i32) -> i32 {
     // fixtures so its sloped side can be inspected in isolation.
     if (16..=23).contains(&x) && (6..=14).contains(&z) {
         return 23 - x;
+    }
+    // 1-cell pit at (-20, -2) surrounded by an h=1 plateau at x ∈ [-22, -18],
+    // z ∈ [-4, 0]. All 8 neighbors of the pit are strictly higher: a "true
+    // pit" the pit-preservation rule must keep flat at own_h=0.
+    if (x, z) != (-20, -2) && (-22..=-18).contains(&x) && (-4..=0).contains(&z) {
+        return 1;
+    }
+    // L-shaped plateau for inside-concave-corner test. Horizontal leg at
+    // x ∈ [-24, -18], z ∈ [-12, -9]; vertical leg at x ∈ [-24, -21],
+    // z ∈ [-9, -7]. Inside concave corner cell at world (-20, -8) — plateau
+    // wraps N, W, NW; ground E, S, SE. Classifies as saddle [0, 1, 1, 0] under
+    // current rule (no flat triangular top in the 2-triangle split).
+    if ((-24..=-18).contains(&x) && (-12..=-9).contains(&z))
+        || ((-24..=-21).contains(&x) && (-9..=-7).contains(&z))
+    {
+        return 1;
     }
     0
 }

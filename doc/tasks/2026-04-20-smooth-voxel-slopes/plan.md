@@ -937,6 +937,51 @@ The old test asserts a `(±0.707, 0.707, 0)` or `(0, 0.707, ±0.707)` hip normal
 
 ---
 
+## Phase 4.7: Inside-Concave-Corner Fixture + True-Pit Detection
+
+### Problem
+
+At the inside concave corner of an L-shaped plateau (cell adjacent to plateau on `N` and `W` cardinals, ground on `S`/`E`, with `NW` diagonal also plateau), corner classification produces `[0, 1, 1, 0]` — a saddle. The 2-triangle Anti-diagonal split gives two tilted triangles meeting at the cell center with no flat component, so the cell's top has no flat triangular region at the plateau level. User's wireframe shows this as two diagonal faces with an apparent vertical seam between them and no flat cap.
+
+Root cause: `c00` gets pulled down to `own_h` by `corner_rule`'s ISOLATED-PIT branch (2×2 = `[H, H, H, own]`, own_count==1). The same 2×2 signature appears for a genuine 1-cell pit (which *should* stay at own_h) and for an inside concave corner (which should lift to max). Per-corner logic can't distinguish them.
+
+### Phase 4.7a: Fixture
+
+Add two features to `SteppedGenerator` that reliably produce the bug and a reference-correct case:
+
+1. **L-shaped plateau** — horizontal leg `x ∈ [-24, -18], z ∈ [-12, -9]`; vertical leg `x ∈ [-24, -21], z ∈ [-9, -7]`. Inside concave corner cell at world `(-20, -8)`.
+2. **1-cell pit** — carve `(-20, -2)` out of a surrounding `h=1` plateau at `x ∈ [-22, -18], z ∈ [-4, 0]`. All 8 neighbors of the pit cell are higher, so it should stay flat at own_h=0.
+
+No classifier changes in this phase. Visual confirmation in the stepped_terrain example before implementing the fix.
+
+### Phase 4.7b: True-Pit Detection (next phase)
+
+Detect true pits at the cell level before calling `corner_rule`:
+
+```rust
+/// A cell is a "true pit" when all 8 cardinal+diagonal neighbors have height
+/// strictly greater than own_h. Out-of-range (SENTINEL) neighbors are ignored.
+fn is_true_pit(heights: &[i32], padded_xz: usize, px: usize, pz: usize, own_h: i32) -> bool;
+```
+
+Pass a flag into `corner_rule` (or branch in `compute_corners`) so the ISOLATED-PIT preservation fires only for true pits. Non-pit cells fall through to `max` — inside-corner cells become `[1, 1, 1, 0]` (single-sunk c11) which Phase 4.6's rule already renders as 1 flat + 1 tilted.
+
+Expected post-fix classifications:
+- Inside corner cell `(-20, -8)` → `[1, 1, 1, 0]`.
+- 1-cell pit cell `(-20, -2)` → `[0, 0, 0, 0]` (unchanged).
+
+### Verification (Phase 4.7a)
+
+#### Automated
+- [ ] `cargo check-all` passes
+- [ ] `cargo test -p voxel_map_engine --lib` passes — existing tests unchanged (new features live in chunks not exercised by `stepped_generator_all_chunks_no_degenerate_triangles`)
+
+#### Manual
+- [ ] `cargo run --example stepped_terrain` — navigate to world region around `(-20, -8)`; confirm the L's inside concave corner shows the saddle artifact (two tilted triangles, no flat top)
+- [ ] Navigate to `(-20, -2)`; confirm the 1-cell pit renders as a flat recessed cell (reference-correct behavior that must not regress in 4.7b)
+
+---
+
 ## Phase 5: Cross-Chunk Continuity + Integration Validation
 
 ### Changes
