@@ -970,15 +970,30 @@ Expected post-fix classifications:
 - Inside corner cell `(-20, -8)` → `[1, 1, 1, 0]`.
 - 1-cell pit cell `(-20, -2)` → `[0, 0, 0, 0]` (unchanged).
 
-### Verification (Phase 4.7a)
+### Verification (Phase 4.7a fixture)
 
 #### Automated
-- [ ] `cargo check-all` passes
-- [ ] `cargo test -p voxel_map_engine --lib` passes — existing tests unchanged (new features live in chunks not exercised by `stepped_generator_all_chunks_no_degenerate_triangles`)
+- [x] `cargo check-all` passes
+- [x] `cargo test -p voxel_map_engine --lib` passes (132/132) with existing tests unchanged
 
 #### Manual
-- [ ] `cargo run --example stepped_terrain` — navigate to world region around `(-20, -8)`; confirm the L's inside concave corner shows the saddle artifact (two tilted triangles, no flat top)
-- [ ] Navigate to `(-20, -2)`; confirm the 1-cell pit renders as a flat recessed cell (reference-correct behavior that must not regress in 4.7b)
+- [x] User confirmed the saddle artifact at `(-20, -8)` reproduces in stepped_terrain
+- (1-cell pit at `(-20, -2)` reference check folded into 4.7b regression test)
+
+### Verification (Phase 4.7b fix)
+
+#### Automated
+- [x] `cargo check-all` passes
+- [x] `cargo test -p voxel_map_engine --lib` passes (135/135)
+- [x] New `corner_rule_lifts_isolated_at_non_pit_cell` covers the `is_pit=false` branch
+- [x] New `inside_concave_corner_emits_beveled_top` — cell `(-20, -8)` classifies NonPlanar `[3, 3, 3, 2]` (single-sunk c11)
+- [x] New `single_cell_pit_stays_flat` — cell `(-20, -2)` classifies Planar flat `[2, 2, 2, 2]`
+- [x] Existing `corner_rule_preserves_isolated_pit`, `extension_rejects_*`, pyramid/staircase tests all pass
+
+#### Manual
+- [ ] `cargo run --example stepped_terrain` — inside concave corner at `(-20, -8)` now renders as a flat triangular top at y=1 plus one tilted triangle descending to the deep corner
+- [ ] 1-cell pit at `(-20, -2)` still renders as a recessed flat cell (no regression)
+- [ ] Natural heightmap terrain (arena / overworld map): inside concave corners along elevation steps now show beveled flat-plus-tilted tops instead of the saddle spikes
 
 ---
 

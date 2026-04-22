@@ -338,7 +338,8 @@ fn classify_columns(heights: &[i32], materials: &[u8], padded_xz: usize) -> Vec<
             if h == SENTINEL_NO_SURFACE {
                 continue;
             }
-            let corners = compute_corners(heights, padded_xz, px, pz, h);
+            let is_pit = is_true_pit(heights, padded_xz, px, pz, h);
+            let corners = compute_corners(heights, padded_xz, px, pz, h, is_pit);
             let material = materials[px * padded_xz + pz];
             out[px * padded_xz + pz] = Some(match plane_fit(corners, px as i32, pz as i32) {
                 Some((gradient_x, gradient_z, intercept)) => ColumnTop::Planar {
@@ -355,31 +356,69 @@ fn classify_columns(heights: &[i32], materials: &[u8], padded_xz: usize) -> Vec<
     out
 }
 
+/// A cell is a "true pit" iff all 8 cardinal+diagonal neighbors have height
+/// strictly greater than `own_h`. The per-corner ISOLATED-PIT branch of
+/// `corner_rule` preserves `own_h` at corners whose 2×2 signature matches
+/// `[H, H, H, own]`, which is valid for 1-cell pits but ALSO fires at inside
+/// concave corners of plateaus (where the cell is not a pit). This cell-level
+/// check lets `corner_rule` distinguish the two cases: at non-pit cells the
+/// rule falls through to `max`, producing `[H, H, H, H]`-style lifts that let
+/// Phase 4.6's diagonal rule render a beveled flat+tilted top.
+///
+/// Limitation: multi-cell pits (2+ adjacent cells at the same floor height)
+/// do NOT classify as true pits because the neighboring pit cells are equal
+/// to `own_h`, not strictly greater. Their tops get lifted to the surrounding
+/// plateau level and the pit floor becomes invisible on the mesh. This is an
+/// accepted v1 trade-off.
+fn is_true_pit(heights: &[i32], padded_xz: usize, px: usize, pz: usize, own_h: i32) -> bool {
+    for dx in -1..=1i32 {
+        for dz in -1..=1i32 {
+            if dx == 0 && dz == 0 {
+                continue;
+            }
+            let nx = (px as i32 + dx) as usize;
+            let nz = (pz as i32 + dz) as usize;
+            let nh = heights[nx * padded_xz + nz];
+            if nh == SENTINEL_NO_SURFACE || nh <= own_h {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Compute 4 corner top-face-y values for interior column at `(px, pz)` via the
 /// corner-max rule. SENTINEL neighbors mark absent terrain → treat as cliff.
+/// `is_pit` gates the ISOLATED-PIT branch of `corner_rule` (see
+/// [`is_true_pit`]).
 fn compute_corners(
     heights: &[i32],
     padded_xz: usize,
     px: usize,
     pz: usize,
     own_h: i32,
+    is_pit: bool,
 ) -> [i32; 4] {
     let h = |x: usize, z: usize| -> i32 { heights[x * padded_xz + z] };
     let c00 = corner_rule(
         [h(px - 1, pz - 1), h(px, pz - 1), h(px - 1, pz), own_h],
         own_h,
+        is_pit,
     );
     let c10 = corner_rule(
         [h(px, pz - 1), h(px + 1, pz - 1), own_h, h(px + 1, pz)],
         own_h,
+        is_pit,
     );
     let c01 = corner_rule(
         [h(px - 1, pz), own_h, h(px - 1, pz + 1), h(px, pz + 1)],
         own_h,
+        is_pit,
     );
     let c11 = corner_rule(
         [own_h, h(px + 1, pz), h(px, pz + 1), h(px + 1, pz + 1)],
         own_h,
+        is_pit,
     );
     [c00, c10, c01, c11]
 }
@@ -388,13 +427,16 @@ fn compute_corners(
 ///
 /// - `delta == 0`: flat → corner = `own_h`.
 /// - `delta == 1`: single-unit transition.
-///     - Isolated pit (own is min AND appears only once): corner = `own_h`.
-///       Keeps a single-cell valley at its floor height.
+///     - Isolated pit branch fires only when `is_pit` is true AND `own_h` is
+///       the unique minimum of the 2×2: corner = `own_h`. Keeps a 1-cell
+///       pit's floor at its own height. At non-pit cells (e.g. the inside
+///       concave corner of a plateau, which has the same 2×2 signature) this
+///       branch is skipped so the corner lifts to `max`.
 ///     - Otherwise (peak, peak-adjacent, slope, multi-cell pit edge): corner = `max`.
 ///       Rises to meet the higher neighbor / tip.
 /// - `delta >= 2`: cliff → corner = `own_h`.
 /// - SENTINEL neighbor (no surface in that column): treat as cliff → `own_h`.
-fn corner_rule(values: [i32; 4], own_h: i32) -> i32 {
+fn corner_rule(values: [i32; 4], own_h: i32, is_pit: bool) -> i32 {
     if values.iter().any(|&v| v == SENTINEL_NO_SURFACE) {
         return own_h;
     }
@@ -404,7 +446,7 @@ fn corner_rule(values: [i32; 4], own_h: i32) -> i32 {
         0 => own_h,
         1 => {
             let own_count = values.iter().filter(|&&v| v == own_h).count();
-            if own_h == min && own_count == 1 {
+            if is_pit && own_h == min && own_count == 1 {
                 own_h
             } else {
                 max
@@ -1321,24 +1363,40 @@ mod tests {
 
     #[test]
     fn corner_rule_preserves_isolated_pit() {
+        // All cases below gate pit preservation on `is_pit=true` (the cell
+        // passed `is_true_pit`). `corner_rule_lifts_isolated_at_non_pit_cell`
+        // covers the `is_pit=false` inside-concave-corner case.
         // Isolated pit: own=2 surrounded by 3 neighbors at 3. Keep own (valley).
-        assert_eq!(corner_rule([3, 3, 3, 2], 2), 2);
+        assert_eq!(corner_rule([3, 3, 3, 2], 2, true), 2);
         // Staircase slope east corner: own=3 with 2x max=4. Rise to meet.
-        assert_eq!(corner_rule([3, 4, 3, 4], 3), 4);
+        assert_eq!(corner_rule([3, 4, 3, 4], 3, true), 4);
         // Staircase slope west corner: own=3 with min=2, max=3. Stay at max (=own).
-        assert_eq!(corner_rule([2, 3, 2, 3], 3), 3);
+        assert_eq!(corner_rule([2, 3, 2, 3], 3, true), 3);
         // Peak: own=2 with 3 lower neighbors. own is max → stay.
-        assert_eq!(corner_rule([1, 1, 1, 2], 2), 2);
+        assert_eq!(corner_rule([1, 1, 1, 2], 2, true), 2);
         // Pyramid edge diagonal: own=4 with 3 same + 1 tip at 5. Hip ridge → rise.
-        assert_eq!(corner_rule([5, 4, 4, 4], 4), 5);
+        assert_eq!(corner_rule([5, 4, 4, 4], 4, true), 5);
         // Multi-cell pit edge: own=2 with 2x non-pit at 3. Slope up (ramp into pit).
-        assert_eq!(corner_rule([2, 3, 2, 3], 2), 3);
+        assert_eq!(corner_rule([2, 3, 2, 3], 2, true), 3);
         // Flat: all same. No change.
-        assert_eq!(corner_rule([5, 5, 5, 5], 5), 5);
+        assert_eq!(corner_rule([5, 5, 5, 5], 5, true), 5);
         // Cliff: delta >= 2. Keep own.
-        assert_eq!(corner_rule([5, 2, 5, 2], 2), 2);
+        assert_eq!(corner_rule([5, 2, 5, 2], 2, true), 2);
         // SENTINEL neighbor: cliff-like. Keep own.
-        assert_eq!(corner_rule([SENTINEL_NO_SURFACE, 3, 3, 3], 3), 3);
+        assert_eq!(corner_rule([SENTINEL_NO_SURFACE, 3, 3, 3], 3, true), 3);
+    }
+
+    #[test]
+    fn corner_rule_lifts_isolated_at_non_pit_cell() {
+        // Same `[H, H, H, own]` signature as an isolated pit, but the cell
+        // was detected as non-pit (e.g. an inside concave corner of a
+        // plateau): the ISOLATED-PIT branch is skipped, corner lifts to max.
+        assert_eq!(corner_rule([3, 3, 3, 2], 2, false), 3);
+        // Cliffs, flats, and non-isolated deltas are unaffected by `is_pit`.
+        assert_eq!(corner_rule([5, 2, 5, 2], 2, false), 2);
+        assert_eq!(corner_rule([5, 5, 5, 5], 5, false), 5);
+        assert_eq!(corner_rule([3, 4, 3, 4], 3, false), 4);
+        assert_eq!(corner_rule([5, 4, 4, 4], 4, false), 5);
     }
 
     #[test]
@@ -1756,6 +1814,80 @@ mod tests {
             ),
             "staircase west-end north edge at padded (1, 5) should extend to Planar {:?}, got {:?}",
             expected,
+            top
+        );
+    }
+
+    /// L-shape in SteppedGenerator places an inside concave corner cell at
+    /// world (-20, -8). Pre-4.7b it classified as saddle [0, 1, 1, 0] (stored
+    /// heights [2, 3, 3, 2]) and rendered two tilted triangles with no flat
+    /// component. Post-4.7b: `is_true_pit` returns false (cardinal S and E are
+    /// equal to own), the ISOLATED-PIT branch is skipped at c00, and the
+    /// corner lifts to max=3 — giving [3, 3, 3, 2] (single-sunk c11), which
+    /// Phase 4.6's diagonal rule emits as a flat triangle at y=3 plus one
+    /// tilted triangle dropping to c11.
+    #[test]
+    fn inside_concave_corner_emits_beveled_top() {
+        use crate::config::VoxelGeneratorImpl;
+        use crate::terrain::SteppedGenerator;
+
+        let generator = SteppedGenerator {
+            chunk_size: 16,
+            shape: padded_shape(),
+        };
+        // world (-20, -8) → chunk (-2, 0, -1), padded (13, 9).
+        let voxels = generator.generate_terrain(IVec3::new(-2, 0, -1));
+        let shape = padded_shape();
+        let padded_xz = shape.as_array()[0] as usize;
+        let heights = column_heights(&voxels, &shape);
+        let materials = column_materials(&voxels, &shape);
+        let tops = classify_columns(&heights, &materials, padded_xz);
+        let top = tops[13 * padded_xz + 9];
+        assert!(
+            matches!(
+                top,
+                Some(ColumnTop::NonPlanar {
+                    corners: [3, 3, 3, 2],
+                    ..
+                })
+            ),
+            "inside concave corner at world (-20, -8) should classify NonPlanar [3, 3, 3, 2] (top-face), got {:?}",
+            top
+        );
+    }
+
+    /// 1-cell pit in SteppedGenerator (cell at world (-20, -2) carved out of
+    /// a surrounding h=1 plateau). All 8 neighbors strictly higher →
+    /// `is_true_pit` returns true → ISOLATED-PIT preservation fires at every
+    /// corner. Cell stays flat at own_h.
+    #[test]
+    fn single_cell_pit_stays_flat() {
+        use crate::config::VoxelGeneratorImpl;
+        use crate::terrain::SteppedGenerator;
+
+        let generator = SteppedGenerator {
+            chunk_size: 16,
+            shape: padded_shape(),
+        };
+        // world (-20, -2) → chunk (-2, 0, -1), padded (13, 15).
+        let voxels = generator.generate_terrain(IVec3::new(-2, 0, -1));
+        let shape = padded_shape();
+        let padded_xz = shape.as_array()[0] as usize;
+        let heights = column_heights(&voxels, &shape);
+        let materials = column_materials(&voxels, &shape);
+        let tops = classify_columns(&heights, &materials, padded_xz);
+        let top = tops[13 * padded_xz + 15];
+        assert!(
+            matches!(
+                top,
+                Some(ColumnTop::Planar {
+                    corners: [2, 2, 2, 2],
+                    gradient_x: 0,
+                    gradient_z: 0,
+                    ..
+                })
+            ),
+            "1-cell pit at world (-20, -2) should classify Planar flat [2, 2, 2, 2], got {:?}",
             top
         );
     }
