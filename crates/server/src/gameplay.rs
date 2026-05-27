@@ -10,7 +10,9 @@ use protocol::world_object::{
 };
 use protocol::*;
 
-use crate::map::{ClientChunkVisibility, MapLoadState};
+use crate::map::{
+    ClientChunkVisibility, MapLoadState, MapPreparation, PendingInitialSpawn, RoomRegistry,
+};
 use voxel_map_engine::prelude::ChunkTicket;
 
 /// Default spawn position used for respawning and initial player placement.
@@ -22,7 +24,14 @@ impl Plugin for ServerGameplayPlugin {
     fn build(&self, app: &mut App) {
         app.add_observer(handle_connected);
         app.add_observer(crate::auth::cleanup_pending_auth_on_disconnect);
-        app.add_systems(Update, crate::auth::handle_identity_proof);
+        app.add_systems(
+            Update,
+            (
+                crate::auth::handle_identity_proof,
+                process_pending_initial_spawns,
+            )
+                .chain(),
+        );
         // app.add_systems(OnEnter(AppState::Ready), spawn_dummy_target);
         app.add_systems(
             Update,
@@ -362,33 +371,110 @@ fn handle_connected(
     info!(?client_entity, "sent identity challenge");
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_authenticated_character(
+/// Records an authenticated client as waiting for overworld preflight before spawning a character.
+pub fn queue_authenticated_initial_spawn(
     commands: &mut Commands,
     client_entity: Entity,
     remote_id: RemoteId,
     player_identity: PlayerIdentity,
-    character_query: &Query<Entity, (With<CharacterMarker>, Without<DummyTarget>)>,
-    registry: &MapRegistry,
-    room_registry: &mut crate::map::RoomRegistry,
-    respawn_query: &Query<(&Position, &MapInstanceId), With<RespawnPoint>>,
-    map_params_query: &Query<(
-        &voxel_map_engine::prelude::VoxelMapConfig,
-        &voxel_map_engine::prelude::MapDimensions,
-    )>,
-    start_senders: &mut Query<&mut MessageSender<protocol::map::MapTransitionStart>>,
+    requested_at: f64,
 ) {
     let peer_id = remote_id.0;
-    commands.entity(client_entity).insert(player_identity);
+    commands.entity(client_entity).insert((
+        player_identity,
+        PendingInitialSpawn {
+            remote_id,
+            identity: player_identity,
+            requested_at,
+        },
+    ));
     info!(
         ?client_entity,
         ?peer_id,
         ?player_identity,
-        "spawning authenticated character entity"
+        "queued authenticated character spawn pending overworld persistence preflight"
     );
+}
 
+/// Spawns authenticated characters only after the overworld map is persistence-ready.
+#[allow(clippy::too_many_arguments)]
+pub fn process_pending_initial_spawns(
+    mut commands: Commands,
+    pending_clients: Query<(Entity, &PendingInitialSpawn)>,
+    character_query: Query<Entity, (With<CharacterMarker>, Without<DummyTarget>)>,
+    mut registry: ResMut<MapRegistry>,
+    map_state_query: Query<&MapLoadState>,
+    map_params_query: Query<(
+        &voxel_map_engine::prelude::VoxelMapConfig,
+        &voxel_map_engine::prelude::MapDimensions,
+    )>,
+    save_path: Res<crate::persistence::WorldSavePath>,
+    mut room_registry: ResMut<RoomRegistry>,
+    respawn_query: Query<(&Position, &MapInstanceId), With<RespawnPoint>>,
+    mut start_senders: Query<&mut MessageSender<protocol::map::MapTransitionStart>>,
+) {
+    for (client_entity, pending_spawn) in &pending_clients {
+        match crate::map::preparation::ensure_map_exists(
+            &mut commands,
+            &mut registry,
+            &map_state_query,
+            &map_params_query,
+            &save_path,
+            &MapInstanceId::Overworld,
+        ) {
+            MapPreparation::Ready {
+                entity: overworld_entity,
+                params,
+            } => {
+                let character_entity = spawn_authenticated_character_entity(
+                    &mut commands,
+                    client_entity,
+                    pending_spawn.remote_id,
+                    &character_query,
+                    overworld_entity,
+                    &respawn_query,
+                );
+                commit_initial_overworld_spawn(
+                    &mut commands,
+                    character_entity,
+                    client_entity,
+                    overworld_entity,
+                    params,
+                    &mut room_registry,
+                    &mut start_senders,
+                    &respawn_query,
+                );
+                commands
+                    .entity(client_entity)
+                    .remove::<PendingInitialSpawn>();
+            }
+            MapPreparation::Pending => {
+                trace!(
+                    ?client_entity,
+                    "initial spawn waiting for overworld persistence preflight"
+                );
+            }
+            MapPreparation::Blocked(reason) => {
+                warn!(
+                    ?client_entity,
+                    ?reason,
+                    "initial spawn blocked by overworld persistence preflight"
+                );
+            }
+        }
+    }
+}
+
+fn spawn_authenticated_character_entity(
+    commands: &mut Commands,
+    client_entity: Entity,
+    remote_id: RemoteId,
+    character_query: &Query<Entity, (With<CharacterMarker>, Without<DummyTarget>)>,
+    overworld_entity: Entity,
+    respawn_query: &Query<(&Position, &MapInstanceId), With<RespawnPoint>>,
+) -> Entity {
+    let peer_id = remote_id.0;
     let num_characters = character_query.iter().count();
-
     let available_colors = [
         css::LIMEGREEN,
         css::PINK,
@@ -397,14 +483,13 @@ pub fn spawn_authenticated_character(
         css::CRIMSON,
     ];
     let color = available_colors[num_characters % available_colors.len()];
-
     let spawn_pos = respawn_query
         .iter()
         .find(|(_, mid)| **mid == MapInstanceId::Overworld)
         .map(|(p, _)| p.0)
         .unwrap_or(DEFAULT_SPAWN_POS);
 
-    let character_entity = commands
+    commands
         .spawn((
             Name::new("Character"),
             PlayerId(peer_id),
@@ -428,12 +513,23 @@ pub fn spawn_authenticated_character(
             Health::new(100.0),
             RespawnTimerConfig::default(),
             AbilityCooldowns::default(),
-            ChunkTicket::player(registry.get(&MapInstanceId::Overworld)),
+            ChunkTicket::player(overworld_entity),
             ClientChunkVisibility::default(),
         ))
-        .id();
+        .id()
+}
 
-    // Phase 2 (complete_map_transition) will AddSender when client reports ready
+#[allow(clippy::too_many_arguments)]
+fn commit_initial_overworld_spawn(
+    commands: &mut Commands,
+    character_entity: Entity,
+    client_entity: Entity,
+    _overworld_entity: Entity,
+    params: crate::map::MapTransitionParams,
+    room_registry: &mut RoomRegistry,
+    start_senders: &mut Query<&mut MessageSender<protocol::map::MapTransitionStart>>,
+    respawn_query: &Query<(&Position, &MapInstanceId), With<RespawnPoint>>,
+) {
     let room = room_registry.get_or_create(&MapInstanceId::Overworld, commands);
     commands
         .entity(character_entity)
@@ -444,22 +540,22 @@ pub fn spawn_authenticated_character(
             relocated_entities: vec![character_entity],
         });
 
-    // Send MapTransitionStart so client enters the transition state machine
-    let map_entity = registry.get(&MapInstanceId::Overworld);
-    let (config, dimensions) = map_params_query
-        .get(map_entity)
-        .expect("Overworld map must have VoxelMapConfig and MapDimensions");
+    let spawn_pos = respawn_query
+        .iter()
+        .find(|(_, mid)| **mid == MapInstanceId::Overworld)
+        .map(|(p, _)| p.0)
+        .unwrap_or(DEFAULT_SPAWN_POS);
     let mut sender = start_senders
         .get_mut(client_entity)
         .expect("Client entity must have MessageSender<MapTransitionStart>");
     sender.send::<protocol::map::MapChannel>(protocol::map::MapTransitionStart {
         target: MapInstanceId::Overworld,
-        seed: config.seed,
-        generation_version: config.generation_version,
-        bounds: dimensions.bounds,
+        seed: params.seed,
+        generation_version: params.generation_version,
+        bounds: params.bounds,
         spawn_position: spawn_pos,
-        chunk_size: dimensions.chunk_size,
-        column_y_range: dimensions.column_y_range,
+        chunk_size: params.chunk_size,
+        column_y_range: params.column_y_range,
         readiness_radius: protocol::transition::TRANSITION_READINESS_RADIUS,
     });
 }

@@ -8,7 +8,7 @@ use persistence::{PersistenceError, Store};
 
 use crate::config::WorldObjectSpawn;
 
-use super::{ENTITY_SAVE_VERSION, EntityFileEnvelope, ZSTD_COMPRESSION_LEVEL, entity_file_path};
+use super::{entity_file_path, EntityFileEnvelope, ENTITY_SAVE_VERSION, ZSTD_COMPRESSION_LEVEL};
 
 /// Filesystem-backed store for per-chunk entity spawn data.
 ///

@@ -5891,6 +5891,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostr_map_persistence"
+version = "0.1.0"
+dependencies = [
+ "protocol",
+ "serde",
+]
+
+[[package]]
 name = "notify"
 version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7674,6 +7682,7 @@ dependencies = [
  "mock_instant",
  "ndshape",
  "nostr_client",
+ "nostr_map_persistence",
  "protocol",
  "ron 0.12.0",
  "serde",

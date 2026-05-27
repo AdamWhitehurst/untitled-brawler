@@ -2,11 +2,109 @@ use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use lightyear::prelude::{Room, RoomEvent, RoomPlugin, RoomTarget};
 use protocol::map::{MapInstanceId, PendingTransition};
-use protocol::NostrPublicKey;
-use server::map::RoomRegistry;
+use protocol::{MapRegistry, NostrPublicKey};
+use server::map::preparation::ensure_map_exists;
+use server::map::{MapLoadState, MapPreparation, PendingMapSwitchPreflight, RoomRegistry};
+use server::persistence::WorldSavePath;
+use voxel_map_engine::prelude::{ChunkTicket, MapDimensions, VoxelMapConfig};
 
 fn owner(byte: u8) -> NostrPublicKey {
     NostrPublicKey([byte; 32])
+}
+
+#[test]
+fn map_transition_registered_map_checking_persistence_is_not_usable() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.init_resource::<MapRegistry>();
+    app.init_resource::<WorldSavePath>();
+    let map_entity = app
+        .world_mut()
+        .spawn((MapInstanceId::Overworld, MapLoadState::CheckingPersistence))
+        .id();
+    app.world_mut()
+        .resource_mut::<MapRegistry>()
+        .insert(MapInstanceId::Overworld, map_entity);
+
+    app.world_mut()
+        .run_system_once(
+            |mut commands: Commands,
+             mut registry: ResMut<MapRegistry>,
+             states: Query<&MapLoadState>,
+             params: Query<(&VoxelMapConfig, &MapDimensions)>,
+             save_path: Res<WorldSavePath>| {
+                let preparation = ensure_map_exists(
+                    &mut commands,
+                    &mut registry,
+                    &states,
+                    &params,
+                    &save_path,
+                    &MapInstanceId::Overworld,
+                );
+                assert!(matches!(preparation, MapPreparation::Pending));
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn map_transition_blocked_map_preparation_preserves_rejection() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    app.init_resource::<MapRegistry>();
+    app.init_resource::<WorldSavePath>();
+    let map_entity = app
+        .world_mut()
+        .spawn((
+            MapInstanceId::Overworld,
+            MapLoadState::Blocked(nostr_map_persistence::MapPersistenceRejection::Filesystem(
+                "bad meta".to_string(),
+            )),
+        ))
+        .id();
+    app.world_mut()
+        .resource_mut::<MapRegistry>()
+        .insert(MapInstanceId::Overworld, map_entity);
+
+    app.world_mut()
+        .run_system_once(
+            |mut commands: Commands,
+             mut registry: ResMut<MapRegistry>,
+             states: Query<&MapLoadState>,
+             params: Query<(&VoxelMapConfig, &MapDimensions)>,
+             save_path: Res<WorldSavePath>| {
+                let preparation = ensure_map_exists(
+                    &mut commands,
+                    &mut registry,
+                    &states,
+                    &params,
+                    &save_path,
+                    &MapInstanceId::Overworld,
+                );
+                assert!(matches!(preparation, MapPreparation::Blocked(_)));
+            },
+        )
+        .unwrap();
+}
+
+#[test]
+fn map_transition_pending_switch_preflight_marker_does_not_start_transition() {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins);
+    let entity = app
+        .world_mut()
+        .spawn(PendingMapSwitchPreflight {
+            target_map_id: MapInstanceId::Homebase { owner: owner(7) },
+            requested_at: 1.0,
+        })
+        .id();
+    app.update();
+    assert!(app
+        .world()
+        .get::<PendingMapSwitchPreflight>(entity)
+        .is_some());
+    assert!(app.world().get::<PendingTransition>(entity).is_none());
+    assert!(app.world().get::<ChunkTicket>(entity).is_none());
 }
 
 #[test]

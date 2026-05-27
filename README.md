@@ -9,7 +9,7 @@ See [VISION.md](VISION.md) for the long-term game vision.
 - Server-authoritative multiplayer over WebTransport with Lightyear prediction/replication.
 - Native and WASM clients that connect to the same authoritative server.
 - Nostr identity, server discovery, and connection authentication.
-- Persistent voxel maps with Overworld and per-player Homebase instances.
+- Persistent voxel maps with Overworld and per-player Homebase instances, gated by server-side persistence preflight before startup spawns or map transitions.
 - Server-authoritative terrain sculpting, world-object placement, editing, and persistence.
 - Data-driven abilities, combat phases, hit detection, health, death, and respawn.
 - Sprite-rig character rendering and RON-loaded animation assets.
@@ -147,6 +147,7 @@ Gameplay hotkeys are filtered through client-local input ownership so focused UI
 | `crates/voxel_map_engine` | Voxel terrain generation, chunk lifecycle, meshing, brush edits, and map internals. |
 | `crates/sprite_rig` | Sprite rig assets, animation loading, and billboarded rig spawning. |
 | `crates/nostr_client` | Nostr relay pool, encrypted identity, server announcements, and auth helpers. |
+| `crates/nostr_map_persistence` | Shared Nostr map persistence DTOs, rejection types, and future manifest helpers. |
 | `assets` | Game data, sprites, rigs, animations, terrain, objects, and voxel models. |
 | `worlds` | Local generated/persisted world data. |
 | `docs` | Brainstorms, task plans, bug notes, and deeper design documents. |

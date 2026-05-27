@@ -63,7 +63,7 @@ impl ChunkStatus {
 }
 
 /// Voxel data for one chunk (16^3 with 1-voxel padding = 18^3)
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChunkData {
     pub voxels: PalettedChunk,
     pub fill_type: FillType,

@@ -16,7 +16,7 @@ pub(crate) const ZSTD_COMPRESSION_LEVEL: i32 = 3;
 ///
 /// `chunk_size` records the map's edge length at save time so load-time
 /// validation can reject data authored under a different configuration.
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChunkFileEnvelope {
     pub version: u32,
     pub chunk_size: u32,

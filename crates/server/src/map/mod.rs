@@ -1,3 +1,13 @@
+pub mod preflight;
+pub mod preparation;
+pub mod switching;
+pub mod types;
+
+pub use preflight::*;
+pub use preparation::*;
+pub use switching::*;
+pub use types::*;
+
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::path::PathBuf;
@@ -10,21 +20,19 @@ use lightyear::prelude::{
     ControlledBy, MessageReceiver, MessageSender, NetworkVisibility, Room, RoomEvent, RoomTarget,
     ServerMultiMessageSender,
 };
-use protocol::map::{MapSwitchTarget, MapTransitionStart, PlayerMapSwitchRequest};
 use protocol::{
     CharacterMarker, ChunkChannel, ChunkDataSync, MapInstanceId, MapRegistry, NostrPublicKey,
-    PendingTransition, PlayerIdentity, SectionBlocksUpdate, UnloadColumn, VoxelBrushEditRequest,
-    VoxelChange, VoxelChannel, VoxelConcreteEditRequest, VoxelEditAck, VoxelEditBroadcast,
-    VoxelEditReject, VoxelEditRequest, VoxelType,
+    SectionBlocksUpdate, UnloadColumn, VoxelBrushEditRequest, VoxelChange, VoxelChannel,
+    VoxelConcreteEditRequest, VoxelEditAck, VoxelEditBroadcast, VoxelEditReject, VoxelEditRequest,
+    VoxelType,
 };
 #[allow(unused_imports)]
 use tracy_client::plot;
 use voxel_map_engine::lifecycle::{self, PendingSaves};
 use voxel_map_engine::prelude::{
-    bounds_to_spawning_distance, brush_footprint, build_generator_from_components, BiomeRules,
-    ChunkTicket, HeightMap, Homebase, MapDimensions, MoistureMap, PlacementRules, RuntimeShape,
-    TerrainBrushMode, VoxelGenerator, VoxelMapConfig, VoxelMapInstance, VoxelPlugin, VoxelWorld,
-    WorldVoxel,
+    brush_footprint, build_generator_from_components, BiomeRules, ChunkTicket, HeightMap,
+    MapDimensions, MoistureMap, PlacementRules, RuntimeShape, TerrainBrushMode, VoxelGenerator,
+    VoxelMapConfig, VoxelMapInstance, VoxelPlugin, VoxelWorld, WorldVoxel,
 };
 
 use crate::persistence::fs_map_entities::FsMapEntitiesStore;
@@ -77,8 +85,8 @@ impl RoomRegistry {
     }
 }
 
-const DEFAULT_OVERWORLD_SEED: u64 = 999;
-const GENERATION_VERSION: u32 = 0;
+pub(crate) const DEFAULT_OVERWORLD_SEED: u64 = 999;
+pub(crate) const GENERATION_VERSION: u32 = 0;
 const SAVE_DEBOUNCE_SECONDS: f64 = 1.0;
 const MAX_DIRTY_SECONDS: f64 = 5.0;
 
@@ -115,18 +123,11 @@ pub struct PendingVoxelBroadcasts {
     pub per_chunk: HashMap<(MapInstanceId, IVec3), Vec<PendingVoxelEdit>>,
 }
 
-/// Tracks a map entity's load lifecycle.
-#[derive(Component, PartialEq, Eq)]
-pub enum MapLoadState {
-    AwaitingMeta,
-    AwaitingEntities,
-    Ready,
-}
-
 /// Spawn the overworld map entity with store components and begin async meta load.
 fn init_overworld_entity(
     mut commands: Commands,
     mut registry: ResMut<MapRegistry>,
+    mut queue: ResMut<PendingMapPreflights>,
     save_path: Res<WorldSavePath>,
     server_identity: Res<nostr_client::ServerIdentity>,
 ) {
@@ -137,7 +138,7 @@ fn init_overworld_entity(
         .spawn((
             MapInstanceId::Overworld,
             protocol::map::Owner(owner),
-            MapLoadState::AwaitingMeta,
+            MapLoadState::CheckingPersistence,
             Transform::default(),
             StoreBackend::new(FsMapMetaStore {
                 map_dir: map_dir.clone(),
@@ -159,6 +160,10 @@ fn init_overworld_entity(
         .id();
 
     registry.insert(MapInstanceId::Overworld, map);
+    queue.0.push_back(PendingMapPreflight {
+        target_map_id: MapInstanceId::Overworld,
+        kind: MapPreflightKind::StartupOverworld,
+    });
 }
 
 /// Poll async meta loads, configure map entities when meta arrives.
@@ -166,6 +171,7 @@ fn poll_map_meta(
     mut commands: Commands,
     mut query: Query<(
         Entity,
+        &MapInstanceId,
         &mut PendingStoreOps<(), MapMeta>,
         &StoreBackend<(), MapMeta, FsMapMetaStore>,
         &mut MapLoadState,
@@ -173,7 +179,7 @@ fn poll_map_meta(
     terrain_registry: Res<TerrainDefRegistry>,
     type_registry: Res<AppTypeRegistry>,
 ) {
-    for (entity, mut ops, store, mut state) in &mut query {
+    for (entity, map_id, mut ops, store, mut state) in &mut query {
         ops.poll();
         log_save_errors(&mut ops, "map metadata");
 
@@ -205,6 +211,7 @@ fn poll_map_meta(
             configure_map_from_meta(
                 &mut commands,
                 entity,
+                map_id,
                 seed,
                 gen_version,
                 &store.0.map_dir,
@@ -220,6 +227,7 @@ fn poll_map_meta(
             configure_map_from_meta(
                 &mut commands,
                 entity,
+                map_id,
                 DEFAULT_OVERWORLD_SEED,
                 GENERATION_VERSION,
                 &store.0.map_dir,
@@ -232,21 +240,23 @@ fn poll_map_meta(
 }
 
 /// Apply map configuration components after meta is resolved.
-fn configure_map_from_meta(
+pub(crate) fn configure_map_from_meta(
     commands: &mut Commands,
     entity: Entity,
+    map_id: &MapInstanceId,
     seed: u64,
     generation_version: u32,
     map_dir: &PathBuf,
     terrain_registry: &TerrainDefRegistry,
     type_registry: &AppTypeRegistry,
 ) {
+    let terrain_key = terrain_key_for_map(map_id);
     let terrain_def = terrain_registry
-        .get("overworld")
-        .expect("overworld.terrain.ron must be loaded by AppState::Ready");
+        .get(terrain_key)
+        .unwrap_or_else(|| panic!("{terrain_key}.terrain.ron must be loaded by AppState::Ready"));
     let dimensions = terrain_def
         .map_dimensions()
-        .expect("overworld.terrain.ron must contain MapDimensions");
+        .unwrap_or_else(|| panic!("{terrain_key}.terrain.ron must contain MapDimensions"));
 
     let mut config = VoxelMapConfig::new(seed, generation_version, 2, true);
     config.save_dir = Some(map_dir.clone());
@@ -269,6 +279,14 @@ fn configure_map_from_meta(
         shape,
     );
     commands.entity(entity).insert(generator);
+}
+
+/// Returns the terrain asset key used to configure a map instance.
+pub(crate) fn terrain_key_for_map(map_id: &MapInstanceId) -> &'static str {
+    match map_id {
+        MapInstanceId::Overworld => "overworld",
+        MapInstanceId::Homebase { .. } => "homebase",
+    }
 }
 
 /// Clone terrain definition components via `reflect_clone`, excluding `MapDimensions`.
@@ -549,30 +567,6 @@ fn collect_entities_by_map(
     by_map
 }
 
-/// Synchronously load and spawn entities for a map. Used by homebase spawn path
-/// which doesn't yet use the async store lifecycle.
-fn load_map_entities_sync(
-    commands: &mut Commands,
-    map_dir: &Arc<PathBuf>,
-    map_id: &MapInstanceId,
-) -> usize {
-    use persistence::Store;
-    let store = FsMapEntitiesStore {
-        map_dir: map_dir.clone(),
-    };
-    let entities: Vec<SavedEntity> = match store.load(&()) {
-        Ok(Some(entities)) => entities,
-        Ok(None) => return 0,
-        Err(e) => {
-            warn!("Failed to load entities for {map_id:?}: {e}");
-            return 0;
-        }
-    };
-    let count = entities.len();
-    spawn_saved_entities(commands, map_id, &entities);
-    count
-}
-
 /// Spawn map entities (respawn points, etc.) from loaded data.
 fn spawn_saved_entities(commands: &mut Commands, map_id: &MapInstanceId, entities: &[SavedEntity]) {
     for saved in entities {
@@ -658,13 +652,17 @@ impl Plugin for ServerMapPlugin {
             .init_resource::<RoomRegistry>()
             .init_resource::<WorldDirtyState>()
             .init_resource::<PendingVoxelBroadcasts>()
+            .init_resource::<PendingMapPreflights>()
             .init_resource::<WorldSavePath>()
             .add_systems(OnEnter(AppState::Ready), init_overworld_entity)
             .add_systems(
                 Update,
                 (
+                    spawn_map_preflight_tasks.run_if(in_state(AppState::Ready)),
+                    poll_map_persistence_preflight.run_if(in_state(AppState::Ready)),
                     poll_map_meta.run_if(in_state(AppState::Ready)),
                     poll_map_entities.run_if(in_state(AppState::Ready)),
+                    commit_ready_map_preflights.run_if(in_state(AppState::Ready)),
                     (
                         (
                             handle_voxel_edit_requests,
@@ -683,7 +681,7 @@ impl Plugin for ServerMapPlugin {
                     handle_world_object_rotate_requests,
                     push_chunks_to_clients,
                     save_dirty_chunks_debounced,
-                    handle_map_switch_requests.run_if(resource_exists::<TerrainDefRegistry>),
+                    handle_map_switch_requests,
                     crate::transition::complete_map_transition,
                     protocol::attach_chunk_colliders,
                     crate::chunk_entities::spawn_chunk_entities
@@ -2017,261 +2015,6 @@ fn unload_stale_columns(
             }
         }
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn handle_map_switch_requests(
-    mut commands: Commands,
-    mut receivers: Query<(Entity, &mut MessageReceiver<PlayerMapSwitchRequest>)>,
-    mut senders: Query<&mut MessageSender<MapTransitionStart>>,
-    controlled_query: Query<(Entity, &ControlledBy, &MapInstanceId), With<CharacterMarker>>,
-    pending: Query<(), With<PendingTransition>>,
-    player_identities: Query<&PlayerIdentity>,
-    mut registry: ResMut<MapRegistry>,
-    mut room_registry: ResMut<RoomRegistry>,
-    map_params_query: Query<(&VoxelMapConfig, &MapDimensions)>,
-    save_path: Res<WorldSavePath>,
-    // Option<Res<_>> here because tests may run without a loaded terrain registry.
-    // At runtime the `.run_if(resource_exists::<TerrainDefRegistry>)` guard prevents
-    // the system from running without it; this Option<...> exists only so the
-    // system's param validation doesn't panic in test apps that skip terrain loading.
-    terrain_registry: Option<Res<TerrainDefRegistry>>,
-    type_registry: Res<AppTypeRegistry>,
-    respawn_query: Query<(&Position, &MapInstanceId), With<protocol::RespawnPoint>>,
-) {
-    let Some(terrain_registry) = terrain_registry else {
-        trace!("handle_map_switch_requests: TerrainDefRegistry not loaded yet, skipping");
-        return;
-    };
-    for (client_entity, mut receiver) in &mut receivers {
-        for request in receiver.receive() {
-            trace!(
-                "handle_map_switch_requests: received {request:?} from client {client_entity:?}"
-            );
-            let (player_entity, _controlled_by, current_map_id) = controlled_query
-                .iter()
-                .find(|(_, ctrl, _)| ctrl.owner == client_entity)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "No character entity found for client {client_entity:?} during map switch"
-                    )
-                });
-
-            if pending.get(player_entity).is_ok() {
-                warn!("Player {player_entity:?} already transitioning, ignoring request");
-                continue;
-            }
-
-            let identity = player_identities
-                .get(client_entity)
-                .expect("Authenticated client must have PlayerIdentity before map switch");
-            let target_map_id = resolve_switch_target(&request.target, identity.0);
-
-            if *current_map_id == target_map_id {
-                warn!("Player {player_entity:?} already on target map {target_map_id:?}");
-                continue;
-            }
-
-            crate::transition::start_map_transition(
-                &mut commands,
-                player_entity,
-                client_entity,
-                current_map_id,
-                &target_map_id,
-                &mut registry,
-                &mut room_registry,
-                &map_params_query,
-                &mut senders,
-                &save_path,
-                &terrain_registry,
-                &type_registry,
-                &respawn_query,
-            );
-        }
-    }
-}
-
-/// Resolves a `MapSwitchTarget` to a `MapInstanceId` using the authenticated player's public key.
-fn resolve_switch_target(target: &MapSwitchTarget, owner: NostrPublicKey) -> MapInstanceId {
-    match target {
-        MapSwitchTarget::Overworld => MapInstanceId::Overworld,
-        MapSwitchTarget::Homebase => MapInstanceId::Homebase { owner },
-    }
-}
-
-/// Seed, generation_version, and bounds for a map transition message.
-pub struct MapTransitionParams {
-    pub seed: u64,
-    pub generation_version: u32,
-    pub bounds: Option<IVec3>,
-    pub chunk_size: u32,
-    pub column_y_range: (i32, i32),
-}
-
-/// Returns the map entity and transition params. If the map already exists,
-/// reads params from its `VoxelMapConfig`/`MapDimensions`. If newly spawned,
-/// derives them from the terrain def (the entity isn't queryable yet via commands).
-#[allow(clippy::too_many_arguments)]
-pub fn ensure_map_exists(
-    commands: &mut Commands,
-    map_id: &MapInstanceId,
-    registry: &mut MapRegistry,
-    map_params_query: &Query<(&VoxelMapConfig, &MapDimensions)>,
-    save_path: &WorldSavePath,
-    terrain_registry: &TerrainDefRegistry,
-    type_registry: &AppTypeRegistry,
-) -> (Entity, MapTransitionParams) {
-    if let Some(&entity) = registry.0.get(map_id) {
-        let (config, dimensions) = map_params_query
-            .get(entity)
-            .expect("Existing map entity must have VoxelMapConfig + MapDimensions");
-        let params = MapTransitionParams {
-            seed: config.seed,
-            generation_version: config.generation_version,
-            bounds: dimensions.bounds,
-            chunk_size: dimensions.chunk_size,
-            column_y_range: dimensions.column_y_range,
-        };
-        return (entity, params);
-    }
-
-    match map_id {
-        MapInstanceId::Overworld => {
-            panic!("Overworld must already be registered in MapRegistry");
-        }
-        MapInstanceId::Homebase { owner } => {
-            let (entity, params) = spawn_homebase(
-                commands,
-                *owner,
-                save_path,
-                registry,
-                map_id,
-                terrain_registry,
-                type_registry,
-            );
-            (entity, params)
-        }
-    }
-}
-
-/// Spawns a new homebase map, loading seed and entities from disk if saved.
-fn spawn_homebase(
-    commands: &mut Commands,
-    owner: NostrPublicKey,
-    save_path: &WorldSavePath,
-    registry: &mut MapRegistry,
-    map_id: &MapInstanceId,
-    terrain_registry: &TerrainDefRegistry,
-    type_registry: &AppTypeRegistry,
-) -> (Entity, MapTransitionParams) {
-    let map_dir = Arc::new(map_save_dir(&save_path.0, map_id));
-
-    let seed = load_homebase_seed(&map_dir, owner);
-
-    let terrain_def = terrain_registry
-        .get("homebase")
-        .expect("homebase.terrain.ron must be loaded");
-    let dimensions = terrain_def
-        .map_dimensions()
-        .expect("homebase.terrain.ron must contain MapDimensions");
-
-    let bounds = dimensions.bounds;
-    let spawning_distance = bounds_to_spawning_distance(bounds.unwrap_or(IVec3::ONE));
-
-    let mut config = VoxelMapConfig::new(seed, 0, spawning_distance, true);
-    config.save_dir = Some(map_dir.as_ref().clone());
-
-    let instance = VoxelMapInstance::new(dimensions.tree_height, dimensions.chunk_size);
-    let shape = instance.shape.clone();
-
-    let params = MapTransitionParams {
-        seed: config.seed,
-        generation_version: config.generation_version,
-        bounds: dimensions.bounds,
-        chunk_size: dimensions.chunk_size,
-        column_y_range: dimensions.column_y_range,
-    };
-
-    let entity = commands
-        .spawn((
-            instance,
-            config,
-            dimensions.clone(),
-            Homebase,
-            protocol::map::Owner(owner),
-            Transform::default(),
-            map_id.clone(),
-            StoreBackend::new(FsMapMetaStore {
-                map_dir: map_dir.clone(),
-            }),
-            PendingStoreOps::<(), MapMeta>::default(),
-            StoreBackend::new(FsMapEntitiesStore {
-                map_dir: map_dir.clone(),
-            }),
-            PendingStoreOps::<(), Vec<SavedEntity>>::default(),
-            StoreBackend::new(FsChunkEntitiesStore {
-                map_dir: map_dir.clone(),
-            }),
-            PendingStoreOps::<IVec3, Vec<WorldObjectSpawn>>::default(),
-            StoreBackend::new(FsChunkStore {
-                map_dir: map_dir.clone(),
-            }),
-            PendingStoreOps::<IVec3, ChunkFileEnvelope>::default(),
-        ))
-        .id();
-
-    let components = clone_terrain_components_excluding_dimensions(terrain_def);
-    apply_object_components(commands, entity, components, type_registry.0.clone());
-
-    let generator = build_generator_from_def(
-        terrain_def,
-        seed,
-        dimensions.chunk_size,
-        dimensions.padded_size(),
-        shape,
-    );
-    commands.entity(entity).insert(generator);
-
-    registry.insert(map_id.clone(), entity);
-
-    let entity_count = load_map_entities_sync(commands, &map_dir, map_id);
-    if entity_count > 0 {
-        trace!("Loaded {entity_count} entities for homebase {owner:?}");
-    }
-
-    trace!("Spawned server homebase for owner {owner:?}: {entity:?}");
-    (entity, params)
-}
-
-/// Loads the seed for a homebase from saved metadata, falling back to `seed_from_nostr_public_key`.
-fn load_homebase_seed(map_dir: &Arc<PathBuf>, owner: NostrPublicKey) -> u64 {
-    use persistence::Store;
-    let store = FsMapMetaStore {
-        map_dir: map_dir.clone(),
-    };
-    match store.load(&()) {
-        Ok(Some(meta)) => {
-            trace!(
-                ?owner,
-                "Loading homebase from saved metadata (seed={})",
-                meta.seed
-            );
-            meta.seed
-        }
-        _ => {
-            let seed = seed_from_nostr_public_key(owner);
-            trace!(?owner, "Creating new homebase (seed={seed})");
-            seed
-        }
-    }
-}
-
-fn seed_from_nostr_public_key(owner: NostrPublicKey) -> u64 {
-    u64::from_le_bytes(
-        owner.0[0..8]
-            .try_into()
-            .expect("NostrPublicKey has 32 bytes"),
-    )
 }
 
 #[cfg(test)]

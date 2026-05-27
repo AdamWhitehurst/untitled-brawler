@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use bevy::prelude::*;
 use persistence::Store;
+use server::map::seed_from_nostr_public_key;
 use server::persistence::fs_map_entities::FsMapEntitiesStore;
 use server::persistence::fs_map_meta::FsMapMetaStore;
 use server::persistence::{map_save_dir, MapMeta};
@@ -44,6 +45,40 @@ fn save_chunk(store: &FsChunkStore, pos: IVec3, chunk_size: u32, data: &ChunkDat
         data: data.clone(),
     };
     store.save(&pos, &envelope).unwrap();
+}
+
+#[test]
+fn world_persistence_local_valid_map_meta_is_available_for_filesystem_preflight() {
+    let tmp = tempfile::tempdir().unwrap();
+    let map_dir = map_save_dir(tmp.path(), &MapInstanceId::Overworld);
+    let store = test_meta_store(&map_dir);
+    let meta = MapMeta {
+        version: 1,
+        seed: 4242,
+        generation_version: 3,
+        spawn_points: vec![Vec3::new(1.0, 2.0, 3.0)],
+    };
+    store.save(&(), &meta).expect("save meta");
+
+    let loaded = store
+        .load(&())
+        .expect("load meta")
+        .expect("filesystem preflight should see local metadata");
+    assert_eq!(loaded.seed, 4242);
+    assert_eq!(loaded.generation_version, 3);
+}
+
+#[test]
+fn world_persistence_missing_homebase_meta_keeps_deterministic_seed_fallback() {
+    let tmp = tempfile::tempdir().unwrap();
+    let map_id = MapInstanceId::Homebase { owner: owner(9) };
+    let map_dir = map_save_dir(tmp.path(), &map_id);
+    let store = test_meta_store(&map_dir);
+    assert!(store.load(&()).expect("load missing meta").is_none());
+    assert_eq!(
+        seed_from_nostr_public_key(owner(9)),
+        u64::from_le_bytes([9; 8])
+    );
 }
 
 /// Save all dirty chunks from an instance via the store.

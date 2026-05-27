@@ -13,6 +13,7 @@ members = [
   "crates/voxel_map_engine",
   "crates/sprite_rig",
   "crates/nostr_client",
+  "crates/nostr_map_persistence",
 ]
 exclude = [
   "git/avian",
@@ -53,6 +54,7 @@ lightyear_replication = { path = "git/lightyear/lightyear_replication" }
 persistence = { package = "bevy-persistence", git = "https://github.com/AdamWhitehurst/bevy-persistence.git" }
 protocol = { path = "crates/protocol" }
 nostr_client = { path = "crates/nostr_client" }
+nostr_map_persistence = { path = "crates/nostr_map_persistence" }
 client_lightyear = { path = "crates/client_lightyear" }
 server_lightyear = { path = "crates/server_lightyear" }
 client_web_lightyear = { path = "crates/client_web_lightyear" }

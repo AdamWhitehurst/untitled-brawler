@@ -4,9 +4,12 @@ pub mod fs_map_meta;
 use std::path::{Path, PathBuf};
 
 use bevy::prelude::*;
+use nostr_map_persistence::{MapRevision, PayloadSlotState};
 use protocol::map::SavedEntity;
 use protocol::MapInstanceId;
 use serde::{Deserialize, Serialize};
+use voxel_map_engine::config::WorldObjectSpawn;
+use voxel_map_engine::persistence::ChunkFileEnvelope;
 
 pub(crate) const META_VERSION: u32 = 1;
 
@@ -17,6 +20,26 @@ pub struct MapMeta {
     pub seed: u64,
     pub generation_version: u32,
     pub spawn_points: Vec<Vec3>,
+}
+
+/// Server-decoded complete map save accepted by persistence preflight.
+#[derive(Clone, Debug)]
+pub struct ServerValidatedMapSave {
+    pub meta: MapMeta,
+    pub chunks: Vec<(IVec3, ChunkFileEnvelope)>,
+    pub chunk_entities: Vec<(IVec3, Vec<WorldObjectSpawn>)>,
+    pub map_entities: Option<Vec<SavedEntity>>,
+    pub revision: MapRevision,
+}
+
+/// Server-decoded map delta accepted by persistence preflight.
+#[derive(Clone, Debug)]
+pub struct ServerValidatedMapDelta {
+    pub revision: MapRevision,
+    pub meta: PayloadSlotState<MapMeta>,
+    pub chunks: Vec<(IVec3, PayloadSlotState<ChunkFileEnvelope>)>,
+    pub chunk_entities: Vec<(IVec3, PayloadSlotState<Vec<WorldObjectSpawn>>)>,
+    pub map_entities: PayloadSlotState<Vec<SavedEntity>>,
 }
 
 /// Resource holding the base save directory path.

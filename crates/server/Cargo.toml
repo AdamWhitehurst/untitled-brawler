@@ -14,13 +14,21 @@ path = "src/main.rs"
 tracy = ["bevy/trace_tracy", "voxel_map_engine/tracy", "tracy-client/enable"]
 
 [dependencies]
-bevy = { workspace = true, default-features = true, features = ["file_watcher"] }
+bevy = { workspace = true, default-features = true, features = [
+  "file_watcher",
+] }
 voxel_map_engine = { workspace = true }
 leafwing-input-manager = { workspace = true }
-lightyear = { workspace = true, features = ["server", "netcode", "leafwing", "replication" ] }
+lightyear = { workspace = true, features = [
+  "server",
+  "netcode",
+  "leafwing",
+  "replication",
+] }
 server_lightyear = { workspace = true }
 protocol = { workspace = true }
 nostr_client = { workspace = true }
+nostr_map_persistence = { workspace = true }
 anyhow = "1.0"
 persistence = { workspace = true }
 avian3d = { workspace = true }

@@ -1,4 +1,3 @@
-use avian3d::prelude::Position;
 use bevy::prelude::*;
 use lightyear::connection::client::Disconnected;
 use lightyear::prelude::server::ClientOf;
@@ -24,7 +23,6 @@ pub fn cleanup_pending_auth_on_disconnect(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn handle_identity_proof(
     mut commands: Commands,
     mut proof_receivers: Query<
@@ -36,21 +34,7 @@ pub fn handle_identity_proof(
         ),
         With<ClientOf>,
     >,
-    character_query: Query<
-        Entity,
-        (
-            With<protocol::CharacterMarker>,
-            Without<protocol::DummyTarget>,
-        ),
-    >,
-    registry: Res<protocol::MapRegistry>,
-    mut room_registry: ResMut<crate::map::RoomRegistry>,
-    respawn_query: Query<(&Position, &protocol::MapInstanceId), With<protocol::RespawnPoint>>,
-    map_params_query: Query<(
-        &voxel_map_engine::prelude::VoxelMapConfig,
-        &voxel_map_engine::prelude::MapDimensions,
-    )>,
-    mut start_senders: Query<&mut MessageSender<protocol::map::MapTransitionStart>>,
+    time: Res<Time>,
 ) {
     let mut outcomes = Vec::new();
 
@@ -72,17 +56,12 @@ pub fn handle_identity_proof(
                     "verified client identity proof"
                 );
                 commands.entity(client_entity).remove::<PendingAuth>();
-                crate::gameplay::spawn_authenticated_character(
+                crate::gameplay::queue_authenticated_initial_spawn(
                     &mut commands,
                     client_entity,
                     remote_id,
                     player_identity,
-                    &character_query,
-                    &registry,
-                    &mut room_registry,
-                    &respawn_query,
-                    &map_params_query,
-                    &mut start_senders,
+                    time.elapsed_secs_f64(),
                 );
             }
             Err(error) => {
