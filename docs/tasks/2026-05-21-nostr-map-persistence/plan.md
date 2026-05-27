@@ -542,8 +542,8 @@ Add tests for:
 
 #### Manual
 
-- [ ] Start `cargo server` and confirm overworld startup logs preflight before normal filesystem loading; then run `cargo client`, request a homebase switch, and confirm the player is not frozen/relocated until the server has selected seed/dimensions.
-- [ ] With remote disabled/unavailable, confirm valid filesystem worlds still transition normally.
+- [x] Start `cargo server` and confirm overworld startup logs preflight before normal filesystem loading; then run `cargo client`, request a homebase switch, and confirm the player is not frozen/relocated until the server has selected seed/dimensions.
+- [x] With remote disabled/unavailable, confirm valid filesystem worlds still transition normally.
 
 ---
 
@@ -1392,10 +1392,10 @@ Add or update tests to prove materialized chunks are loadable by `FsChunkStore` 
 
 #### Automated
 
-- [ ] `if pgrep -af 'cargo (build|check|test)|cargo-make|rustc' | grep -v pgrep; then echo busy >&2; exit 1; fi`
-- [ ] `cargo test -p server remote_restore`
-- [ ] `cargo test -p server world_persistence`
-- [ ] `cargo test -p server voxel_persistence`
+- [x] `if pgrep -af 'cargo (build|check|test)|cargo-make|rustc' | grep -v pgrep; then echo busy >&2; exit 1; fi`
+- [x] `cargo test -p server remote_restore`
+- [x] `cargo test -p server world_persistence`
+- [x] `cargo test -p server voxel_persistence`
 
 #### Manual
 

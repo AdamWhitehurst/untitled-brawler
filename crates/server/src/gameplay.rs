@@ -413,19 +413,26 @@ pub fn process_pending_initial_spawns(
     respawn_query: Query<(&Position, &MapInstanceId), With<RespawnPoint>>,
     mut start_senders: Query<&mut MessageSender<protocol::map::MapTransitionStart>>,
 ) {
-    for (client_entity, pending_spawn) in &pending_clients {
-        match crate::map::preparation::ensure_map_exists(
-            &mut commands,
-            &mut registry,
-            &map_state_query,
-            &map_params_query,
-            &save_path,
-            &MapInstanceId::Overworld,
-        ) {
-            MapPreparation::Ready {
-                entity: overworld_entity,
-                params,
-            } => {
+    if pending_clients.is_empty() {
+        trace!("no pending initial spawns to process");
+        return;
+    }
+
+    let overworld_preparation = crate::map::preparation::ensure_map_exists(
+        &mut commands,
+        &mut registry,
+        &map_state_query,
+        &map_params_query,
+        &save_path,
+        &MapInstanceId::Overworld,
+    );
+
+    match overworld_preparation {
+        MapPreparation::Ready {
+            entity: overworld_entity,
+            params,
+        } => {
+            for (client_entity, pending_spawn) in &pending_clients {
                 let character_entity = spawn_authenticated_character_entity(
                     &mut commands,
                     client_entity,
@@ -439,7 +446,7 @@ pub fn process_pending_initial_spawns(
                     character_entity,
                     client_entity,
                     overworld_entity,
-                    params,
+                    params.clone(),
                     &mut room_registry,
                     &mut start_senders,
                     &respawn_query,
@@ -448,13 +455,15 @@ pub fn process_pending_initial_spawns(
                     .entity(client_entity)
                     .remove::<PendingInitialSpawn>();
             }
-            MapPreparation::Pending => {
-                trace!(
-                    ?client_entity,
-                    "initial spawn waiting for overworld persistence preflight"
-                );
-            }
-            MapPreparation::Blocked(reason) => {
+        }
+        MapPreparation::Pending => {
+            trace!(
+                pending_spawn_count = pending_clients.iter().count(),
+                "initial spawns waiting for overworld persistence preflight"
+            );
+        }
+        MapPreparation::Blocked(reason) => {
+            for (client_entity, _) in &pending_clients {
                 warn!(
                     ?client_entity,
                     ?reason,

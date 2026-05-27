@@ -1,5 +1,6 @@
 pub mod announcement;
 pub mod auth;
+pub mod blobs;
 pub mod identity;
 pub mod plugin;
 pub mod relay_pool;
@@ -9,6 +10,7 @@ pub use announcement::{
     SERVER_ANNOUNCEMENT_TTL_SECS, SERVER_ANNOUNCEMENT_VERSION,
 };
 pub use auth::{build_identity_proof, verify_identity_proof, NOSTR_KIND_AUTH};
+pub use blobs::BlobRef;
 pub use identity::{
     client_id_from_public_key, client_identity_dir, decode_nsec_or_ncryptsec,
     generate_encrypted_identity, identity_file_path, identity_file_path_in_dir,

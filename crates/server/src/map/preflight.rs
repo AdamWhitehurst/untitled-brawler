@@ -7,7 +7,11 @@ use protocol::{MapInstanceId, MapRegistry, RespawnPoint, TerrainDefRegistry};
 use voxel_map_engine::prelude::{MapDimensions, VoxelMapConfig};
 
 use crate::persistence::fs_map_meta::FsMapMetaStore;
-use crate::persistence::{map_save_dir, MapMeta, WorldSavePath};
+use crate::persistence::{
+    install_active_revision_store_backends, map_save_dir, materialize_validated_map_save,
+    store_map_dir_for_loading, FakeRemoteMapRestores, MapMeta, RemoteMapPersistenceConfig,
+    WorldSavePath,
+};
 
 use super::{
     configure_map_from_meta, ensure_map_exists, seed_from_nostr_public_key, ActiveMapPreflight,
@@ -51,6 +55,8 @@ pub fn poll_map_persistence_preflight(
     mut map_states: Query<&mut MapLoadState>,
     mut registry: ResMut<MapRegistry>,
     save_path: Res<WorldSavePath>,
+    remote_config: Res<RemoteMapPersistenceConfig>,
+    fake_remote_restores: Option<Res<FakeRemoteMapRestores>>,
     terrain_registry: Option<Res<TerrainDefRegistry>>,
     type_registry: Res<AppTypeRegistry>,
 ) {
@@ -100,9 +106,25 @@ pub fn poll_map_persistence_preflight(
                     .completed_loads
                     .pop()
                     .expect("checked completed filesystem metadata load exists");
-                let decision = loaded_meta
-                    .map(MapPersistencePreflightDecision::UseFilesystem)
-                    .unwrap_or(MapPersistencePreflightDecision::Missing);
+                let decision = if remote_config.enabled {
+                    fake_remote_restores
+                        .as_ref()
+                        .and_then(|remote| remote.0.get(&preflight.request.target_map_id).cloned())
+                        .map(MapPersistencePreflightDecision::UseRemote)
+                        .unwrap_or_else(|| {
+                            trace!(
+                                ?preflight.request.target_map_id,
+                                "remote persistence enabled but fake remote restore is unavailable; falling back"
+                            );
+                            loaded_meta
+                                .map(MapPersistencePreflightDecision::UseFilesystem)
+                                .unwrap_or(MapPersistencePreflightDecision::RemoteUnavailable)
+                        })
+                } else {
+                    loaded_meta
+                        .map(MapPersistencePreflightDecision::UseFilesystem)
+                        .unwrap_or(MapPersistencePreflightDecision::Missing)
+                };
                 apply_preflight_result(
                     &mut commands,
                     &registry,
@@ -270,14 +292,43 @@ fn apply_preflight_result(
                 GENERATION_VERSION,
             );
         }
-        MapPersistencePreflightDecision::UseRemote(_save) => {
-            block_preflight_target(
+        MapPersistencePreflightDecision::UseRemote(save) => {
+            let map_entity = registry.get(&request.target_map_id);
+            let map_save_dir = map_save_dir(&save_path.0, &request.target_map_id);
+            if let Err(error) = materialize_validated_map_save(&map_save_dir, &save) {
+                block_preflight_target(
+                    registry,
+                    map_states,
+                    &request.target_map_id,
+                    MapPersistenceRejection::Filesystem(format!(
+                        "materialize remote save: {error}"
+                    )),
+                );
+                return;
+            }
+            if let Err(error) =
+                install_active_revision_store_backends(commands, map_entity, &map_save_dir)
+            {
+                block_preflight_target(
+                    registry,
+                    map_states,
+                    &request.target_map_id,
+                    MapPersistenceRejection::Filesystem(format!(
+                        "install active revision stores: {error}"
+                    )),
+                );
+                return;
+            }
+            configure_preflight_map(
+                commands,
                 registry,
                 map_states,
+                save_path,
+                terrain_registry,
+                type_registry,
                 &request.target_map_id,
-                MapPersistenceRejection::Invalid(
-                    "remote materialization is not available in Phase 1".to_string(),
-                ),
+                save.meta.seed,
+                save.meta.generation_version,
             );
         }
         MapPersistencePreflightDecision::Blocked(rejection) => {
@@ -299,7 +350,9 @@ fn configure_preflight_map(
     generation_version: u32,
 ) {
     let entity = registry.get(map_id);
-    let map_dir = map_save_dir(&save_path.0, map_id);
+    let canonical_map_dir = map_save_dir(&save_path.0, map_id);
+    let map_dir = store_map_dir_for_loading(&canonical_map_dir)
+        .expect("active map revision pointer must be valid before map configuration");
     configure_map_from_meta(
         commands,
         entity,

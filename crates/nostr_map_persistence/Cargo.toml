@@ -5,4 +5,6 @@ edition = "2021"
 
 [dependencies]
 protocol = { workspace = true }
+nostr_client = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+sha2 = "0.10"

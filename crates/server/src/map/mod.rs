@@ -37,7 +37,9 @@ use voxel_map_engine::prelude::{
 
 use crate::persistence::fs_map_entities::FsMapEntitiesStore;
 use crate::persistence::fs_map_meta::FsMapMetaStore;
-use crate::persistence::{map_save_dir, MapMeta, WorldSavePath};
+use crate::persistence::{
+    map_save_dir, store_map_dir_for_loading, MapMeta, RemoteMapPersistenceConfig, WorldSavePath,
+};
 use persistence::{PendingStoreOps, StoreBackend};
 use protocol::map::{ChunkEntityRef, MapSaveTarget, SavedEntity, SavedEntityKind};
 use protocol::terrain::TerrainDef;
@@ -131,7 +133,11 @@ fn init_overworld_entity(
     save_path: Res<WorldSavePath>,
     server_identity: Res<nostr_client::ServerIdentity>,
 ) {
-    let map_dir = Arc::new(map_save_dir(&save_path.0, &MapInstanceId::Overworld));
+    let canonical_map_dir = map_save_dir(&save_path.0, &MapInstanceId::Overworld);
+    let map_dir = Arc::new(
+        store_map_dir_for_loading(&canonical_map_dir)
+            .expect("overworld active revision pointer must be valid before startup"),
+    );
     let owner = NostrPublicKey(*server_identity.keys.public_key().as_bytes());
 
     let map = commands
@@ -653,6 +659,7 @@ impl Plugin for ServerMapPlugin {
             .init_resource::<WorldDirtyState>()
             .init_resource::<PendingVoxelBroadcasts>()
             .init_resource::<PendingMapPreflights>()
+            .init_resource::<RemoteMapPersistenceConfig>()
             .init_resource::<WorldSavePath>()
             .add_systems(OnEnter(AppState::Ready), init_overworld_entity)
             .add_systems(

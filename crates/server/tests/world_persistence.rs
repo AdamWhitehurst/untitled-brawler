@@ -1,12 +1,20 @@
 use std::sync::Arc;
 
 use bevy::prelude::*;
+use nostr_map_persistence::{MapPersistenceRejection, MapRevision, PayloadSlotState};
 use persistence::Store;
 use server::map::seed_from_nostr_public_key;
 use server::persistence::fs_map_entities::FsMapEntitiesStore;
 use server::persistence::fs_map_meta::FsMapMetaStore;
-use server::persistence::{map_save_dir, MapMeta};
+use server::persistence::{
+    active_pointer_path, assemble_validated_map_save, cleanup_materialization_staging,
+    map_save_dir, materialize_validated_map_save, store_map_dir_for_loading,
+    FsAcceptedMapHeadStore, MapMeta, SaveBase, ServerValidatedMapDelta, ServerValidatedMapSave,
+    STAGING_DIR,
+};
+use voxel_map_engine::config::{WorldObjectPositionKind, WorldObjectSpawn};
 use voxel_map_engine::persistence::fs_chunk::FsChunkStore;
+use voxel_map_engine::persistence::fs_chunk_entities::FsChunkEntitiesStore;
 use voxel_map_engine::persistence::{chunk_file_path, ChunkFileEnvelope, CHUNK_SAVE_VERSION};
 use voxel_map_engine::prelude::*;
 
@@ -34,6 +42,12 @@ fn test_meta_store(dir: &std::path::Path) -> FsMapMetaStore {
 
 fn test_entity_store(dir: &std::path::Path) -> FsMapEntitiesStore {
     FsMapEntitiesStore {
+        map_dir: Arc::new(dir.to_path_buf()),
+    }
+}
+
+fn test_chunk_entities_store(dir: &std::path::Path) -> FsChunkEntitiesStore {
+    FsChunkEntitiesStore {
         map_dir: Arc::new(dir.to_path_buf()),
     }
 }
@@ -78,6 +92,226 @@ fn world_persistence_missing_homebase_meta_keeps_deterministic_seed_fallback() {
     assert_eq!(
         seed_from_nostr_public_key(owner(9)),
         u64::from_le_bytes([9; 8])
+    );
+}
+
+fn remote_revision(byte: u8, revision: u64, previous_hash: Option<[u8; 32]>) -> MapRevision {
+    MapRevision {
+        revision,
+        previous_hash,
+        manifest_hash: [byte; 32],
+    }
+}
+
+fn remote_chunk(fill: u8) -> ChunkFileEnvelope {
+    let mut voxels = vec![WorldVoxel::Air; PADDED_VOLUME_16];
+    voxels[0] = WorldVoxel::Solid(fill);
+    ChunkFileEnvelope {
+        version: CHUNK_SAVE_VERSION,
+        chunk_size: 16,
+        data: ChunkData::from_voxels(&voxels, ChunkStatus::Full),
+    }
+}
+
+fn remote_meta(seed: u64) -> MapMeta {
+    MapMeta {
+        version: 1,
+        seed,
+        generation_version: 0,
+        spawn_points: vec![Vec3::new(0.0, 5.0, 0.0)],
+    }
+}
+
+fn remote_spawn(object_id: &str) -> WorldObjectSpawn {
+    WorldObjectSpawn {
+        object_id: object_id.to_string(),
+        position: Vec3::new(1.0, 2.0, 3.0),
+        position_kind: WorldObjectPositionKind::PlacementBase,
+        persisted_components: vec![],
+    }
+}
+
+fn remote_save(seed: u64, revision: MapRevision) -> ServerValidatedMapSave {
+    ServerValidatedMapSave {
+        meta: remote_meta(seed),
+        chunks: vec![(IVec3::ZERO, remote_chunk(7))],
+        chunk_entities: vec![(IVec3::ZERO, vec![remote_spawn("crate")])],
+        map_entities: Some(vec![SavedEntity {
+            kind: SavedEntityKind::RespawnPoint,
+            position: Vec3::new(0.0, 5.0, 0.0),
+        }]),
+        revision,
+    }
+}
+
+#[test]
+fn remote_restore_missing_local_save_materializes_meta_chunks_and_entities() {
+    let tmp = tempfile::tempdir().unwrap();
+    let map_dir = map_save_dir(tmp.path(), &MapInstanceId::Overworld);
+    let revision = remote_revision(1, 1, None);
+    let save = remote_save(1234, revision.clone());
+
+    materialize_validated_map_save(&map_dir, &save).expect("materialize remote save");
+    let active_dir = store_map_dir_for_loading(&map_dir).expect("active dir");
+    assert_ne!(active_dir, map_dir);
+
+    assert_eq!(
+        test_meta_store(&active_dir)
+            .load(&())
+            .unwrap()
+            .unwrap()
+            .seed,
+        1234
+    );
+    assert!(test_chunk_store(&active_dir)
+        .load(&IVec3::ZERO)
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        test_chunk_entities_store(&active_dir)
+            .load(&IVec3::ZERO)
+            .unwrap()
+            .unwrap()[0]
+            .object_id,
+        "crate"
+    );
+    assert_eq!(
+        test_entity_store(&active_dir)
+            .load(&())
+            .unwrap()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        FsAcceptedMapHeadStore {
+            map_dir: Arc::new(active_dir),
+        }
+        .load(&())
+        .unwrap()
+        .unwrap(),
+        revision
+    );
+}
+
+#[test]
+fn remote_restore_delta_chain_replays_from_filesystem_base() {
+    let base_revision = remote_revision(1, 1, None);
+    let base = remote_save(10, base_revision.clone());
+    let next_revision = remote_revision(2, 2, Some(base_revision.manifest_hash));
+    let assembled = assemble_validated_map_save(
+        SaveBase::Snapshot(base),
+        vec![ServerValidatedMapDelta {
+            revision: next_revision.clone(),
+            meta: PayloadSlotState::Present(remote_meta(20)),
+            chunks: vec![(IVec3::ONE, PayloadSlotState::Present(remote_chunk(8)))],
+            chunk_entities: vec![],
+            map_entities: PayloadSlotState::Absent,
+        }],
+    )
+    .expect("assemble delta chain");
+
+    assert_eq!(assembled.meta.seed, 20);
+    assert_eq!(assembled.chunks.len(), 2);
+    assert_eq!(assembled.revision, next_revision);
+}
+
+#[test]
+fn remote_restore_incomplete_slot_rejected() {
+    let result = assemble_validated_map_save(
+        SaveBase::Empty,
+        vec![ServerValidatedMapDelta {
+            revision: remote_revision(1, 1, None),
+            meta: PayloadSlotState::Absent,
+            chunks: vec![],
+            chunk_entities: vec![],
+            map_entities: PayloadSlotState::Absent,
+        }],
+    );
+
+    assert!(matches!(
+        result,
+        Err(MapPersistenceRejection::Incomplete(_))
+    ));
+}
+
+#[test]
+fn remote_restore_tombstone_removes_slot() {
+    let base_revision = remote_revision(1, 1, None);
+    let base = remote_save(10, base_revision.clone());
+    let assembled = assemble_validated_map_save(
+        SaveBase::Snapshot(base),
+        vec![ServerValidatedMapDelta {
+            revision: remote_revision(2, 2, Some(base_revision.manifest_hash)),
+            meta: PayloadSlotState::Absent,
+            chunks: vec![(IVec3::ZERO, PayloadSlotState::Tombstoned)],
+            chunk_entities: vec![(IVec3::ZERO, PayloadSlotState::Tombstoned)],
+            map_entities: PayloadSlotState::Empty,
+        }],
+    )
+    .expect("assemble tombstone delta");
+
+    assert!(assembled.chunks.is_empty());
+    assert!(assembled.chunk_entities.is_empty());
+    assert_eq!(assembled.map_entities.unwrap().len(), 0);
+}
+
+#[test]
+fn remote_restore_accepted_head_written_after_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let map_dir = map_save_dir(tmp.path(), &MapInstanceId::Overworld);
+    let save = remote_save(77, remote_revision(3, 3, None));
+
+    materialize_validated_map_save(&map_dir, &save).expect("materialize remote save");
+    let active_dir = store_map_dir_for_loading(&map_dir).expect("active dir");
+
+    assert!(active_dir.join("map.meta.bin").exists());
+    assert!(active_dir.join("accepted_head.bin").exists());
+    assert!(active_pointer_path(&map_dir).exists());
+}
+
+#[test]
+fn remote_restore_staging_cleanup_removes_interrupted_revisions() {
+    let tmp = tempfile::tempdir().unwrap();
+    let map_dir = map_save_dir(tmp.path(), &MapInstanceId::Overworld);
+    let staging = map_dir.join(STAGING_DIR).join("interrupted");
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::create_dir_all(&map_dir).unwrap();
+    std::fs::write(
+        active_pointer_path(&map_dir).with_extension("tmp"),
+        b"partial",
+    )
+    .unwrap();
+
+    cleanup_materialization_staging(&map_dir).expect("cleanup staging");
+
+    assert!(!staging.exists());
+    assert!(!active_pointer_path(&map_dir).with_extension("tmp").exists());
+}
+
+#[test]
+fn remote_restore_divergent_chain_preserves_filesystem() {
+    let tmp = tempfile::tempdir().unwrap();
+    let map_dir = map_save_dir(tmp.path(), &MapInstanceId::Overworld);
+    test_meta_store(&map_dir)
+        .save(&(), &remote_meta(55))
+        .unwrap();
+
+    let result = assemble_validated_map_save(
+        SaveBase::Snapshot(remote_save(10, remote_revision(1, 1, None))),
+        vec![ServerValidatedMapDelta {
+            revision: remote_revision(2, 2, Some([9; 32])),
+            meta: PayloadSlotState::Present(remote_meta(99)),
+            chunks: vec![],
+            chunk_entities: vec![],
+            map_entities: PayloadSlotState::Absent,
+        }],
+    );
+
+    assert!(matches!(result, Err(MapPersistenceRejection::Divergent(_))));
+    assert_eq!(
+        test_meta_store(&map_dir).load(&()).unwrap().unwrap().seed,
+        55
     );
 }
 

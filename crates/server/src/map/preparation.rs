@@ -13,7 +13,7 @@ use voxel_map_engine::prelude::{Homebase, MapDimensions, VoxelMapConfig};
 
 use crate::persistence::fs_map_entities::FsMapEntitiesStore;
 use crate::persistence::fs_map_meta::FsMapMetaStore;
-use crate::persistence::{map_save_dir, MapMeta, WorldSavePath};
+use crate::persistence::{map_save_dir, store_map_dir_for_loading, MapMeta, WorldSavePath};
 
 use super::{MapLoadState, MapPreparation, MapTransitionParams};
 
@@ -82,7 +82,11 @@ pub fn spawn_homebase_preflight_placeholder_with_stores(
     state: MapLoadState,
 ) -> Entity {
     let map_id = MapInstanceId::Homebase { owner };
-    let map_dir = Arc::new(map_save_dir(&save_path.0, &map_id));
+    let canonical_map_dir = map_save_dir(&save_path.0, &map_id);
+    let map_dir = Arc::new(
+        store_map_dir_for_loading(&canonical_map_dir)
+            .expect("homebase active revision pointer must be valid before preflight"),
+    );
     commands
         .spawn((
             Homebase,

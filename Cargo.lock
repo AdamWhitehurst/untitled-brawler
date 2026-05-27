@@ -5894,8 +5894,10 @@ dependencies = [
 name = "nostr_map_persistence"
 version = "0.1.0"
 dependencies = [
+ "nostr_client",
  "protocol",
  "serde",
+ "sha2",
 ]
 
 [[package]]
@@ -7687,6 +7689,7 @@ dependencies = [
  "ron 0.12.0",
  "serde",
  "server_lightyear",
+ "sha2",
  "tempfile",
  "test-log",
  "tracy-client",

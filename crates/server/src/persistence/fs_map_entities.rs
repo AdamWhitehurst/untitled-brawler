@@ -47,10 +47,6 @@ impl Store<(), Vec<SavedEntity>> for FsMapEntitiesStore {
                 actual: envelope.version,
             });
         }
-        if envelope.entities.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(envelope.entities))
-        }
+        Ok(Some(envelope.entities))
     }
 }

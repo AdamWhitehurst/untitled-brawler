@@ -1,9 +1,12 @@
 use std::sync::Arc;
 
 use bevy::prelude::*;
+use nostr_map_persistence::MapRevision;
 use persistence::Store;
 use server::persistence::fs_map_meta::FsMapMetaStore;
-use server::persistence::MapMeta;
+use server::persistence::{
+    materialize_validated_map_save, store_map_dir_for_loading, MapMeta, ServerValidatedMapSave,
+};
 use voxel_map_engine::persistence::fs_chunk::FsChunkStore;
 use voxel_map_engine::persistence::{chunk_file_path, ChunkFileEnvelope, CHUNK_SAVE_VERSION};
 use voxel_map_engine::prelude::*;
@@ -167,6 +170,84 @@ fn evicted_dirty_chunk_saved_before_removal() {
         .contains_key(&chunk_to_column(chunk_pos)));
     assert!(instance.get_chunk_data(chunk_pos).is_none());
     assert!(instance.dirty_chunks.is_empty());
+}
+
+#[test]
+fn voxel_persistence_materialized_chunks_load_through_normal_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let map_dir = dir.path().join("overworld");
+    let mut voxels = vec![WorldVoxel::Air; PADDED_VOLUME_16];
+    voxels[25] = WorldVoxel::Solid(11);
+    let save = ServerValidatedMapSave {
+        meta: MapMeta {
+            version: 1,
+            seed: 1,
+            generation_version: 0,
+            spawn_points: vec![],
+        },
+        chunks: vec![(
+            IVec3::ZERO,
+            ChunkFileEnvelope {
+                version: CHUNK_SAVE_VERSION,
+                chunk_size: 16,
+                data: ChunkData::from_voxels(&voxels, ChunkStatus::Full),
+            },
+        )],
+        chunk_entities: vec![],
+        map_entities: None,
+        revision: MapRevision {
+            revision: 1,
+            previous_hash: None,
+            manifest_hash: [4; 32],
+        },
+    };
+
+    materialize_validated_map_save(&map_dir, &save).expect("materialize save");
+    let active_dir = store_map_dir_for_loading(&map_dir).expect("active dir");
+    let loaded = test_chunk_store(&active_dir)
+        .load(&IVec3::ZERO)
+        .unwrap()
+        .expect("materialized chunk loads");
+
+    assert_eq!(loaded.data.voxels.to_voxels()[25], WorldVoxel::Solid(11));
+}
+
+#[test]
+fn voxel_persistence_dirty_saves_after_restore_write_to_active_revision_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let map_dir = dir.path().join("overworld");
+    let save = ServerValidatedMapSave {
+        meta: MapMeta {
+            version: 1,
+            seed: 1,
+            generation_version: 0,
+            spawn_points: vec![],
+        },
+        chunks: vec![],
+        chunk_entities: vec![],
+        map_entities: None,
+        revision: MapRevision {
+            revision: 1,
+            previous_hash: None,
+            manifest_hash: [5; 32],
+        },
+    };
+    materialize_validated_map_save(&map_dir, &save).expect("materialize save");
+    let active_dir = store_map_dir_for_loading(&map_dir).expect("active dir");
+    let store = test_chunk_store(&active_dir);
+
+    let mut instance = VoxelMapInstance::new(5, 16);
+    let chunk_pos = IVec3::new(2, 0, 0);
+    let voxels = vec![WorldVoxel::Air; PADDED_VOLUME_16];
+    instance.insert_chunk_data(
+        chunk_pos,
+        ChunkData::from_voxels(&voxels, ChunkStatus::Full),
+    );
+    instance.chunk_levels.insert(chunk_to_column(chunk_pos), 0);
+    instance.dirty_chunks.insert(chunk_pos);
+    save_dirty_chunks_sync(&mut instance, &store);
+
+    assert!(chunk_file_path(&active_dir, chunk_pos).exists());
 }
 
 #[test]
