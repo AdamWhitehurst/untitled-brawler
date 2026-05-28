@@ -213,8 +213,7 @@ pub async fn publish_event(
         .verify()
         .map_err(|error| NostrEventError::Invalid(error.to_string()))?;
     match client.source.as_ref() {
-        NostrEventSource::Sdk(client) => client
-            .send_event(&event)
+        NostrEventSource::Sdk(client) => crate::compat::await_network(client.send_event(&event))
             .await
             .map(|_| ())
             .map_err(|error| NostrEventError::Query(error.to_string())),
@@ -284,8 +283,7 @@ async fn query_sdk(
             .map_err(|error| NostrEventError::Invalid(error.to_string()))?;
         filter = filter.custom_tag(tag, value);
     }
-    let events = client
-        .fetch_events(filter, query.timeout)
+    let events = crate::compat::await_network(client.fetch_events(filter, query.timeout))
         .await
         .map_err(|error| NostrEventError::Query(error.to_string()))?;
     Ok(events.into_iter().map(|event| event.as_json()).collect())

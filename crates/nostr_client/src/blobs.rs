@@ -111,12 +111,14 @@ pub async fn upload_blob(upload_url: &str, bytes: Vec<u8>) -> Result<BlobRef, Bl
             "blob upload URL must use https: {url}"
         )));
     }
-    let response = reqwest::Client::new()
-        .put(url.clone())
-        .body(bytes.clone())
-        .send()
-        .await
-        .map_err(|error| BlobWriteError::Http(error.to_string()))?;
+    let response = crate::compat::await_network(
+        reqwest::Client::new()
+            .put(url.clone())
+            .body(bytes.clone())
+            .send(),
+    )
+    .await
+    .map_err(|error| BlobWriteError::Http(error.to_string()))?;
     if !response.status().is_success() {
         return Err(BlobWriteError::Http(format!(
             "blob upload failed with status {}",
@@ -159,11 +161,10 @@ pub async fn fetch_and_verify_blob(
             continue;
         }
         saw_allowed_url = true;
-        let response = reqwest::get(url.clone())
+        let response = crate::compat::await_network(reqwest::get(url.clone()))
             .await
             .map_err(|error| BlobReadError::Http(error.to_string()))?;
-        let bytes = response
-            .bytes()
+        let bytes = crate::compat::await_network(response.bytes())
             .await
             .map_err(|error| BlobReadError::Http(error.to_string()))?
             .to_vec();

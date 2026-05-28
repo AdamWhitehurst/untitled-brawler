@@ -1,6 +1,7 @@
 pub mod announcement;
 pub mod auth;
 pub mod blobs;
+mod compat;
 pub mod events;
 pub mod identity;
 pub mod plugin;
