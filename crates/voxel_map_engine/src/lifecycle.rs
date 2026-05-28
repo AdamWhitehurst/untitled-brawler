@@ -1,10 +1,10 @@
+use bevy::ecs::message::MessageWriter;
 use bevy::log::{error, info_span};
 use bevy::prelude::*;
 use bevy::tasks::futures::check_ready;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
-use std::fmt::Debug;
 #[allow(unused_imports)]
 use tracy_client::plot;
 
@@ -22,7 +22,7 @@ use crate::persistence::fs_chunk_entities::FsChunkEntitiesStore;
 use crate::propagator::TicketLevelPropagator;
 use crate::ticket::{ChunkTicket, TicketType, chunk_to_column, column_to_chunks};
 use crate::types::{ChunkStatus, FillType};
-use persistence::{PendingStoreOps, StoreBackend};
+use persistence::{PendingStoreOps, SaveOpId, StoreBackend};
 
 /// Per-frame time budget for chunk pipeline work on a single map.
 /// Reset at the start of each frame by `update_chunks`.
@@ -151,20 +151,28 @@ pub struct PendingSaves {
 pub struct PendingSave {
     pub position: IVec3,
     pub envelope: ChunkFileEnvelope,
+    pub save_id: Option<SaveOpId>,
+}
+
+/// Successful terrain chunk save emitted by the generic voxel persistence drainer.
+#[derive(Message, Clone, Debug)]
+pub struct ChunkSaveCompleted {
+    pub map_entity: Entity,
+    pub position: IVec3,
+    pub save_id: Option<SaveOpId>,
+}
+
+/// Failed terrain chunk save emitted by the generic voxel persistence drainer.
+#[derive(Message, Clone, Debug)]
+pub struct ChunkSaveFailed {
+    pub map_entity: Entity,
+    pub position: IVec3,
+    pub save_id: Option<SaveOpId>,
+    pub error: String,
 }
 
 /// Maximum save tasks drained from queue per frame.
 const MAX_SAVE_SPAWNS_PER_FRAME: usize = 16;
-
-fn log_save_errors<K, V>(ops: &mut PendingStoreOps<K, V>, context: &str)
-where
-    K: Send + Sync + Debug + 'static,
-    V: Send + Sync + 'static,
-{
-    for (key, error) in ops.save_errors.drain(..) {
-        error!("Failed to save {context} at {key:?}: {error}");
-    }
-}
 
 /// Tracks which chunks have in-flight work to prevent overlapping gen/remesh.
 #[derive(Component, Default)]
@@ -449,12 +457,11 @@ pub fn collect_tickets(
         .copied()
         .collect();
     for entity in stale {
-        if let Some(cached) = ticket_cache.remove(&entity) {
-            if let Ok((_, _, _, _, _, _, mut prop, _, _, _, _, _)) =
+        if let Some(cached) = ticket_cache.remove(&entity)
+            && let Ok((_, _, _, _, _, _, mut prop, _, _, _, _, _)) =
                 map_query.get_mut(cached.map_entity)
-            {
-                prop.remove_source(entity);
-            }
+        {
+            prop.remove_source(entity);
         }
     }
 
@@ -487,14 +494,12 @@ pub fn collect_tickets(
 
         if needs_update {
             // If map changed, remove source from old map's propagator first
-            if let Some(cached) = ticket_cache.get(&ticket_entity) {
-                if cached.map_entity != ticket.map_entity {
-                    if let Ok((_, _, _, _, _, _, mut old_prop, _, _, _, _, _)) =
-                        map_query.get_mut(cached.map_entity)
-                    {
-                        old_prop.remove_source(ticket_entity);
-                    }
-                }
+            if let Some(cached) = ticket_cache.get(&ticket_entity)
+                && cached.map_entity != ticket.map_entity
+                && let Ok((_, _, _, _, _, _, mut old_prop, _, _, _, _, _)) =
+                    map_query.get_mut(cached.map_entity)
+            {
+                old_prop.remove_source(ticket_entity);
             }
             if let Ok((_, _, _, _, _, _, mut prop, _, _, _, _, _)) =
                 map_query.get_mut(ticket.map_entity)
@@ -531,17 +536,18 @@ fn remove_column_chunks(
     let _span = info_span!("remove_column_chunks").entered();
     let chunk_size = instance.chunk_size;
     for chunk_pos in column_to_chunks(col, (y_min, y_max)) {
-        if instance.dirty_chunks.remove(&chunk_pos) {
-            if let Some(chunk_data) = instance.get_chunk_data(chunk_pos) {
-                pending_saves.queue.push_back(PendingSave {
-                    position: chunk_pos,
-                    envelope: ChunkFileEnvelope {
-                        version: crate::persistence::CHUNK_SAVE_VERSION,
-                        chunk_size,
-                        data: chunk_data.clone(),
-                    },
-                });
-            }
+        if instance.dirty_chunks.remove(&chunk_pos)
+            && let Some(chunk_data) = instance.get_chunk_data(chunk_pos)
+        {
+            pending_saves.queue.push_back(PendingSave {
+                position: chunk_pos,
+                envelope: ChunkFileEnvelope {
+                    version: crate::persistence::CHUNK_SAVE_VERSION,
+                    chunk_size,
+                    data: chunk_data.clone(),
+                },
+                save_id: None,
+            });
         }
         instance.remove_chunk_data(chunk_pos);
     }
@@ -551,19 +557,48 @@ fn remove_column_chunks(
 /// Drain pending save queue into the map entity's chunk store ops.
 pub fn drain_pending_saves(
     mut map_query: Query<(
+        Entity,
         &mut PendingSaves,
         &StoreBackend<IVec3, ChunkFileEnvelope, FsChunkStore>,
         &mut PendingStoreOps<IVec3, ChunkFileEnvelope>,
     )>,
+    mut completed: MessageWriter<ChunkSaveCompleted>,
+    mut failed: MessageWriter<ChunkSaveFailed>,
 ) {
-    for (mut pending, chunk_store, mut chunk_ops) in &mut map_query {
+    for (map_entity, mut pending, chunk_store, mut chunk_ops) in &mut map_query {
         chunk_ops.poll();
-        log_save_errors(&mut chunk_ops, "chunk data");
+        for completion in chunk_ops.completed_saves.drain(..) {
+            completed.write(ChunkSaveCompleted {
+                map_entity,
+                position: completion.key,
+                save_id: completion.id,
+            });
+        }
+        for failure in chunk_ops.save_errors.drain(..) {
+            error!(
+                "Failed to save chunk data at {:?}: {}",
+                failure.key, failure.error
+            );
+            failed.write(ChunkSaveFailed {
+                map_entity,
+                position: failure.key,
+                save_id: failure.id,
+                error: failure.error.to_string(),
+            });
+        }
 
         let mut spawned = 0;
         while !pending.queue.is_empty() && spawned < MAX_SAVE_SPAWNS_PER_FRAME {
             let save = pending.queue.pop_front().unwrap();
-            chunk_ops.spawn_save(&chunk_store.0, save.position, save.envelope);
+            match save.save_id {
+                Some(save_id) => chunk_ops.spawn_save_with_id(
+                    &chunk_store.0,
+                    save_id,
+                    save.position,
+                    save.envelope,
+                ),
+                None => chunk_ops.spawn_save(&chunk_store.0, save.position, save.envelope),
+            }
             spawned += 1;
         }
 

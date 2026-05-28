@@ -36,6 +36,8 @@ bincode = "1.3"
 ron = { workspace = true }
 serde = { workspace = true }
 sha2 = "0.10"
+hex = "0.4"
+url = "2"
 tracy-client = { workspace = true }
 zstd = "0.13"
 getrandom = { workspace = true }

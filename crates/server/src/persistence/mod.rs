@@ -10,11 +10,11 @@ use std::time::Duration;
 
 use bevy::prelude::*;
 use nostr_map_persistence::{
-    ManifestHash, MapPersistenceRejection, MapRevision, PayloadClass, PayloadKey, PayloadSlotState,
-    RawChunkEntitiesPayload, RawChunkPayload, RawMapEntitiesPayload, RawMapMetaPayload,
-    RawValidatedMapDelta, RawValidatedMapSave,
+    ManifestHash, ManifestPayloadDescriptor, MapPersistenceRejection, MapRevision, PayloadClass,
+    PayloadKey, PayloadSlotState, RawChunkEntitiesPayload, RawChunkPayload, RawMapEntitiesPayload,
+    RawMapMetaPayload, RawValidatedMapDelta, RawValidatedMapSave,
 };
-use persistence::{PersistenceError, Store, StoreBackend};
+use persistence::{PersistenceError, SaveOpId, Store, StoreBackend};
 use protocol::map::SavedEntity;
 use protocol::MapInstanceId;
 use serde::{Deserialize, Serialize};
@@ -355,6 +355,209 @@ impl FsLocalMapHeadStore {
     pub fn path(&self) -> PathBuf {
         self.map_dir.join("local_head.bin")
     }
+}
+
+/// Remote manifest publish lifecycle state persisted per map.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RemotePublishStatus {
+    Pending,
+    InFlight,
+    Published,
+    Failed,
+}
+
+/// One deterministic manifest publish attempt in the per-map remote journal.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemotePublishJournalEntry {
+    pub map_id: MapInstanceId,
+    pub local_revision: MapRevision,
+    pub previous_remote_manifest_hash: Option<ManifestHash>,
+    pub new_manifest_hash: ManifestHash,
+    pub payloads: Vec<ManifestPayloadDescriptor>,
+    pub advances_local_head: LocalMapHead,
+    pub signed_event_json: Option<String>,
+    pub status: RemotePublishStatus,
+    pub retry_count: u32,
+}
+
+/// Persisted per-map remote publish journal.
+#[derive(Component, Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct RemotePublishJournal {
+    pub entries: Vec<RemotePublishJournalEntry>,
+}
+
+/// Filesystem store for a map's remote publish journal.
+#[derive(Clone, Debug)]
+pub struct FsRemotePublishJournalStore {
+    pub save_root: PathBuf,
+}
+
+impl Store<MapInstanceId, RemotePublishJournal> for FsRemotePublishJournalStore {
+    fn load(
+        &self,
+        map_id: &MapInstanceId,
+    ) -> Result<Option<RemotePublishJournal>, PersistenceError> {
+        let path = map_save_dir(&self.save_root, map_id).join("remote_publish_journal.bin");
+        if !path.exists() {
+            trace!(?map_id, "remote publish journal file is absent");
+            return Ok(None);
+        }
+        let bytes = fs::read(&path).map_err(|error| {
+            PersistenceError::Deserialize(format!(
+                "read remote publish journal {}: {error}",
+                path.display()
+            ))
+        })?;
+        let journal = bincode::deserialize(&bytes).map_err(|error| {
+            PersistenceError::Deserialize(format!(
+                "deserialize remote publish journal {}: {error}",
+                path.display()
+            ))
+        })?;
+        Ok(Some(journal))
+    }
+
+    fn save(
+        &self,
+        map_id: &MapInstanceId,
+        journal: &RemotePublishJournal,
+    ) -> Result<(), PersistenceError> {
+        let map_dir = map_save_dir(&self.save_root, map_id);
+        fs::create_dir_all(&map_dir).map_err(|error| {
+            PersistenceError::Serialize(format!(
+                "mkdir remote publish journal dir {}: {error}",
+                map_dir.display()
+            ))
+        })?;
+        atomic_save_bincode(&map_dir.join("remote_publish_journal.bin"), journal)
+    }
+}
+
+/// Server-owned local map publish draft awaiting remote journal preparation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ServerMapPublishDraft {
+    pub local_revision_number: u64,
+    pub meta: PayloadSlotState<MapMeta>,
+    pub chunks: Vec<(IVec3, PayloadSlotState<ChunkFileEnvelope>)>,
+    pub chunk_entities: Vec<(IVec3, PayloadSlotState<Vec<WorldObjectSpawn>>)>,
+    pub map_entities: PayloadSlotState<Vec<SavedEntity>>,
+}
+
+/// Durable unpublished draft keyed by the filesystem save completion id.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LocalUnpublishedPublishDraft {
+    pub map_id: MapInstanceId,
+    pub draft: ServerMapPublishDraft,
+    pub save_id: SaveOpId,
+}
+
+/// Filesystem store for unpublished publish drafts.
+#[derive(Clone, Debug)]
+pub struct FsLocalUnpublishedPublishDraftStore {
+    pub map_dir: Arc<PathBuf>,
+}
+
+impl Store<SaveOpId, LocalUnpublishedPublishDraft> for FsLocalUnpublishedPublishDraftStore {
+    fn load(
+        &self,
+        save_id: &SaveOpId,
+    ) -> Result<Option<LocalUnpublishedPublishDraft>, PersistenceError> {
+        let path = self.draft_path(*save_id);
+        load_optional_bincode(&path)
+    }
+
+    fn save(
+        &self,
+        save_id: &SaveOpId,
+        draft: &LocalUnpublishedPublishDraft,
+    ) -> Result<(), PersistenceError> {
+        atomic_save_bincode(&self.draft_path(*save_id), draft)
+    }
+}
+
+impl FsLocalUnpublishedPublishDraftStore {
+    pub fn draft_path(&self, save_id: SaveOpId) -> PathBuf {
+        self.map_dir
+            .join("unpublished")
+            .join(format!("{}.bin", save_id.0))
+    }
+
+    pub fn load_all(&self) -> Result<Vec<LocalUnpublishedPublishDraft>, PersistenceError> {
+        let dir = self.map_dir.join("unpublished");
+        if !dir.exists() {
+            trace!(?dir, "unpublished publish draft directory is absent");
+            return Ok(Vec::new());
+        }
+        let mut files = fs::read_dir(&dir)
+            .map_err(|error| {
+                PersistenceError::Deserialize(format!(
+                    "read unpublished dir {}: {error}",
+                    dir.display()
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                PersistenceError::Deserialize(format!(
+                    "iterate unpublished dir {}: {error}",
+                    dir.display()
+                ))
+            })?;
+        files.sort_by_key(|entry| entry.file_name());
+        files
+            .into_iter()
+            .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("bin"))
+            .map(|entry| {
+                load_optional_bincode(&entry.path())?.ok_or_else(|| {
+                    PersistenceError::Deserialize(format!(
+                        "unpublished draft disappeared while loading {}",
+                        entry.path().display()
+                    ))
+                })
+            })
+            .collect()
+    }
+}
+
+fn load_optional_bincode<T: for<'de> Deserialize<'de>>(
+    path: &Path,
+) -> Result<Option<T>, PersistenceError> {
+    if !path.exists() {
+        trace!(?path, "optional bincode file is absent");
+        return Ok(None);
+    }
+    let bytes = fs::read(path).map_err(|error| {
+        PersistenceError::Deserialize(format!("read bincode file {}: {error}", path.display()))
+    })?;
+    bincode::deserialize(&bytes).map(Some).map_err(|error| {
+        PersistenceError::Deserialize(format!(
+            "deserialize bincode file {}: {error}",
+            path.display()
+        ))
+    })
+}
+
+fn atomic_save_bincode<T: Serialize>(path: &Path, value: &T) -> Result<(), PersistenceError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            PersistenceError::Serialize(format!(
+                "mkdir bincode parent {}: {error}",
+                parent.display()
+            ))
+        })?;
+    }
+    let bytes = bincode::serialize(value)
+        .map_err(|error| PersistenceError::Serialize(format!("serialize bincode: {error}")))?;
+    let tmp_path = path.with_extension("bin.tmp");
+    fs::write(&tmp_path, bytes).map_err(|error| {
+        PersistenceError::Serialize(format!("write bincode tmp {}: {error}", tmp_path.display()))
+    })?;
+    fs::rename(&tmp_path, path).map_err(|error| {
+        PersistenceError::Serialize(format!(
+            "rename bincode tmp {} -> {}: {error}",
+            tmp_path.display(),
+            path.display()
+        ))
+    })
 }
 
 /// Formats a manifest hash as lowercase hexadecimal.

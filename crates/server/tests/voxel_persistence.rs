@@ -3,6 +3,7 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use nostr_map_persistence::MapRevision;
 use persistence::Store;
+use protocol::MapInstanceId;
 use server::persistence::fs_map_meta::FsMapMetaStore;
 use server::persistence::{
     materialize_validated_map_save, store_map_dir_for_loading, MapMeta, ServerValidatedMapSave,
@@ -268,4 +269,199 @@ fn load_chunk_with_mismatched_chunk_size_errors() {
     // Load succeeds with the same store (chunk_size validation is consumer's job now)
     let loaded = store16.load(&IVec3::ZERO).unwrap().expect("should load");
     assert_eq!(loaded.chunk_size, 16);
+}
+
+fn remote_publish_entry(
+    revision: u64,
+    hash_byte: u8,
+    status: server::persistence::RemotePublishStatus,
+) -> server::persistence::RemotePublishJournalEntry {
+    let hash = [hash_byte; 32];
+    server::persistence::RemotePublishJournalEntry {
+        map_id: MapInstanceId::Overworld,
+        local_revision: MapRevision {
+            revision,
+            previous_hash: None,
+            manifest_hash: hash,
+        },
+        previous_remote_manifest_hash: None,
+        new_manifest_hash: hash,
+        payloads: Vec::new(),
+        advances_local_head: server::persistence::LocalMapHead {
+            local_revision_number: revision,
+            active_content_hash: [revision as u8; 32],
+            accepted_remote_manifest_hash: Some(hash),
+        },
+        signed_event_json: Some(format!("event-{revision}")),
+        status,
+        retry_count: 0,
+    }
+}
+
+#[test]
+fn remote_publish_n_plus_one_waits_behind_failed_n() {
+    let journal = server::persistence::RemotePublishJournal {
+        entries: vec![
+            remote_publish_entry(1, 1, server::persistence::RemotePublishStatus::Failed),
+            remote_publish_entry(2, 2, server::persistence::RemotePublishStatus::Pending),
+        ],
+    };
+
+    assert!(server::map::remote_publish::remote_publish_blocked_by_failed_entry(&journal));
+    assert_eq!(
+        journal.entries[1].status,
+        server::persistence::RemotePublishStatus::Pending
+    );
+}
+
+#[test]
+fn remote_publish_retry_keeps_deterministic_manifest_hash() {
+    let dir = tempfile::tempdir().unwrap();
+    let map_dir = Arc::new(dir.path().join("overworld"));
+    std::fs::create_dir_all(&*map_dir).unwrap();
+    let mut journal = server::persistence::RemotePublishJournal {
+        entries: vec![remote_publish_entry(
+            1,
+            7,
+            server::persistence::RemotePublishStatus::InFlight,
+        )],
+    };
+    let original_hash = journal.entries[0].new_manifest_hash;
+    let mut worker = server::map::remote_publish::RemoteMapPublishWorker::default();
+    worker.in_flight_by_map.insert(MapInstanceId::Overworld);
+    let mut ops =
+        persistence::PendingAsyncStoreOps::<nostr_map_persistence::ManifestHash, String>::default();
+    ops.save_errors.push((
+        original_hash,
+        persistence::PersistenceError::Serialize("forced failure".to_string()),
+    ));
+
+    server::map::remote_publish::apply_publish_results(
+        &MapInstanceId::Overworld,
+        &mut journal,
+        &mut worker,
+        &mut ops,
+        &server::persistence::FsAcceptedMapHeadStore {
+            map_dir: map_dir.clone(),
+        },
+        &server::persistence::FsLocalMapHeadStore {
+            map_dir: map_dir.clone(),
+        },
+        &server::persistence::FsRemotePublishJournalStore {
+            save_root: dir.path().to_path_buf(),
+        },
+    )
+    .expect("publish failure state persists");
+
+    assert_eq!(journal.entries[0].new_manifest_hash, original_hash);
+    assert_eq!(journal.entries[0].retry_count, 1);
+    assert_eq!(
+        journal.entries[0].status,
+        server::persistence::RemotePublishStatus::Failed
+    );
+}
+
+#[test]
+fn remote_publish_success_advances_accepted_and_local_heads() {
+    let dir = tempfile::tempdir().unwrap();
+    let map_dir = Arc::new(dir.path().join("overworld"));
+    std::fs::create_dir_all(&*map_dir).unwrap();
+    let mut journal = server::persistence::RemotePublishJournal {
+        entries: vec![remote_publish_entry(
+            3,
+            8,
+            server::persistence::RemotePublishStatus::InFlight,
+        )],
+    };
+    let hash = journal.entries[0].new_manifest_hash;
+    let accepted_store = server::persistence::FsAcceptedMapHeadStore {
+        map_dir: map_dir.clone(),
+    };
+    let local_store = server::persistence::FsLocalMapHeadStore {
+        map_dir: map_dir.clone(),
+    };
+    let mut worker = server::map::remote_publish::RemoteMapPublishWorker::default();
+    worker.in_flight_by_map.insert(MapInstanceId::Overworld);
+    let mut ops =
+        persistence::PendingAsyncStoreOps::<nostr_map_persistence::ManifestHash, String>::default();
+    ops.completed_saves.push(hash);
+
+    server::map::remote_publish::apply_publish_results(
+        &MapInstanceId::Overworld,
+        &mut journal,
+        &mut worker,
+        &mut ops,
+        &accepted_store,
+        &local_store,
+        &server::persistence::FsRemotePublishJournalStore {
+            save_root: dir.path().to_path_buf(),
+        },
+    )
+    .expect("publish success persists");
+
+    assert_eq!(
+        journal.entries[0].status,
+        server::persistence::RemotePublishStatus::Published
+    );
+    assert_eq!(
+        accepted_store.load(&()).unwrap().unwrap().manifest_hash,
+        hash
+    );
+    assert_eq!(
+        local_store
+            .load(&())
+            .unwrap()
+            .unwrap()
+            .accepted_remote_manifest_hash,
+        Some(hash)
+    );
+}
+
+#[test]
+fn remote_publish_failure_preserves_local_chunk_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let map_dir = dir.path().join("overworld");
+    let store = test_chunk_store(&map_dir);
+    let chunk_pos = IVec3::ZERO;
+    let voxels = vec![WorldVoxel::Air; PADDED_VOLUME_16];
+    let envelope = ChunkFileEnvelope {
+        version: CHUNK_SAVE_VERSION,
+        chunk_size: 16,
+        data: ChunkData::from_voxels(&voxels, ChunkStatus::Full),
+    };
+    store.save(&chunk_pos, &envelope).unwrap();
+
+    let journal = server::persistence::RemotePublishJournal {
+        entries: vec![remote_publish_entry(
+            1,
+            9,
+            server::persistence::RemotePublishStatus::Failed,
+        )],
+    };
+
+    assert!(chunk_file_path(&map_dir, chunk_pos).exists());
+    assert!(server::map::remote_publish::has_unpublished_local_state(
+        None, None, &journal
+    ));
+}
+
+#[test]
+fn remote_publish_local_head_ahead_of_accepted_prefers_filesystem() {
+    let journal = server::persistence::RemotePublishJournal::default();
+    let local = server::persistence::LocalMapHead {
+        local_revision_number: 2,
+        active_content_hash: [2; 32],
+        accepted_remote_manifest_hash: Some([1; 32]),
+    };
+    let accepted = MapRevision {
+        revision: 1,
+        previous_hash: None,
+        manifest_hash: [1; 32],
+    };
+
+    assert!(server::map::remote_publish::has_unpublished_local_state(
+        Some(&local),
+        Some(&accepted),
+        &journal
+    ));
 }

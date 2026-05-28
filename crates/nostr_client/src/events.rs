@@ -61,6 +61,11 @@ impl NostrEventDraft {
     /// Signs this draft with a Nostr secret key and returns raw event JSON.
     pub fn sign_with_secret(&self, secret: SecretKey) -> Result<String, NostrEventError> {
         let keys = Keys::new(secret);
+        self.sign_with_keys(&keys)
+    }
+
+    /// Signs this draft with existing Nostr keys and returns raw event JSON.
+    pub fn sign_with_keys(&self, keys: &Keys) -> Result<String, NostrEventError> {
         let mut builder = EventBuilder::new(Kind::from(self.kind), self.content.clone());
         for tag in &self.tags {
             builder = builder.tag(Tag::custom(
@@ -69,7 +74,7 @@ impl NostrEventDraft {
             ));
         }
         let event = builder
-            .sign_with_keys(&keys)
+            .sign_with_keys(keys)
             .map_err(|error| NostrEventError::Invalid(error.to_string()))?;
         Ok(event.as_json())
     }
@@ -195,6 +200,29 @@ pub enum NostrEventError {
     Invalid(String),
     #[error("Nostr query failed: {0}")]
     Query(String),
+}
+
+/// Publishes a signed event through a relay-backed client.
+pub async fn publish_event(
+    client: &NostrEventClient,
+    event_json: String,
+) -> Result<(), NostrEventError> {
+    let event = Event::from_json(event_json)
+        .map_err(|error| NostrEventError::Invalid(error.to_string()))?;
+    event
+        .verify()
+        .map_err(|error| NostrEventError::Invalid(error.to_string()))?;
+    match client.source.as_ref() {
+        NostrEventSource::Sdk(client) => client
+            .send_event(&event)
+            .await
+            .map(|_| ())
+            .map_err(|error| NostrEventError::Query(error.to_string())),
+        #[cfg(any(test, feature = "test-fixtures"))]
+        NostrEventSource::Static(_) => Err(NostrEventError::Query(
+            "static NostrEventClient cannot publish events".to_string(),
+        )),
+    }
 }
 
 /// Verifies raw Nostr event JSON and exposes generic event data.

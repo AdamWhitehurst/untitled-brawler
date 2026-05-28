@@ -776,3 +776,28 @@ fn rotate_persists_through_chunk_entity_save_restore_payload() {
     let snapshot: WorldObjectRotationSnapshot = ron::from_str(&saved.ron_data).unwrap();
     assert!(snapshot.0.dot(rotation).abs() >= 1.0 - 0.0001);
 }
+
+#[test]
+fn world_object_edit_remote_publish_chunk_entity_empty_payload_encodes_and_decodes() {
+    let bytes = server::map::remote_publish::encode_chunk_entities_payload(Vec::new())
+        .expect("empty chunk entity payload encodes");
+    assert!(!bytes.is_empty());
+}
+
+#[test]
+fn world_object_edit_remote_publish_chunk_entity_empty_file_preserves_authoritative_empty_slot() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = FsChunkEntitiesStore {
+        map_dir: Arc::new(dir.path().to_path_buf()),
+    };
+    let chunk_pos = IVec3::ZERO;
+    store
+        .save(&chunk_pos, &Vec::<WorldObjectSpawn>::new())
+        .unwrap();
+
+    let loaded = store
+        .load(&chunk_pos)
+        .unwrap()
+        .expect("empty chunk entity file is authoritative");
+    assert!(loaded.is_empty());
+}

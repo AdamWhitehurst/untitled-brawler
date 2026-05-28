@@ -45,6 +45,8 @@ impl Plugin for VoxelPlugin {
 
         let generation_enabled = resource_exists::<ChunkGenerationEnabled>;
 
+        app.add_message::<lifecycle::ChunkSaveCompleted>()
+            .add_message::<lifecycle::ChunkSaveFailed>();
         app.add_systems(Startup, lifecycle::init_default_material);
         app.add_systems(
             Update,
@@ -70,7 +72,7 @@ pub mod prelude {
     pub use crate::config::*;
     pub use crate::generation::*;
     pub use crate::instance::*;
-    pub use crate::lifecycle::DefaultVoxelMaterial;
+    pub use crate::lifecycle::{ChunkSaveCompleted, ChunkSaveFailed, DefaultVoxelMaterial};
     pub use crate::mesh_cache::*;
     pub use crate::meshing::*;
     pub use crate::palette::*;

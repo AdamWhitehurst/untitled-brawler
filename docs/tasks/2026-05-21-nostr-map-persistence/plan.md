@@ -3034,10 +3034,10 @@ Add tests proving chunk-entity changes enqueue/publish alongside terrain and pre
 
 #### Automated
 
-- [ ] `if pgrep -af 'cargo (build|check|test)|cargo-make|rustc' | grep -v pgrep; then echo busy >&2; exit 1; fi`
-- [ ] `cargo test -p server remote_publish`
-- [ ] `cargo test -p server voxel_persistence`
-- [ ] `cargo test -p server world_object_edit`
+- [x] `if pgrep -af 'cargo (build|check|test)|cargo-make|rustc' | grep -v pgrep; then echo busy >&2; exit 1; fi`
+- [x] `cargo test -p server remote_publish`
+- [x] `cargo test -p server voxel_persistence`
+- [x] `cargo test -p server world_object_edit`
 
 #### Manual
 

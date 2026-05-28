@@ -157,11 +157,12 @@ fn poll_identity_store_load(
         complete.0 = true;
         info!("Encrypted identity load complete");
     }
-    for (_key, error) in ops.load_errors.drain(..) {
+    if let Some((_key, error)) = ops.load_errors.pop() {
         panic!("Failed to load encrypted identity: {error}");
     }
-    for (_key, error) in ops.save_errors.drain(..) {
-        panic!("Failed to save encrypted identity: {error}");
+    ops.completed_saves.clear();
+    if let Some(failure) = ops.save_errors.pop() {
+        panic!("Failed to save encrypted identity: {}", failure.error);
     }
 }
 

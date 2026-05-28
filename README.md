@@ -147,10 +147,14 @@ Gameplay hotkeys are filtered through client-local input ownership so focused UI
 | `crates/voxel_map_engine` | Voxel terrain generation, chunk lifecycle, meshing, brush edits, and map internals. |
 | `crates/sprite_rig` | Sprite rig assets, animation loading, and billboarded rig spawning. |
 | `crates/nostr_client` | Nostr relay pool, encrypted identity, server announcements, auth helpers, generic event queries, and verified blob helpers. |
-| `crates/nostr_map_persistence` | Shared Nostr map persistence DTOs, signed manifest verification, query policies, remote read helpers, and store adapters. |
+| `crates/nostr_map_persistence` | Shared Nostr map persistence DTOs, signed manifest verification, query policies, remote read/write helpers, and store adapters. |
 | `assets` | Game data, sprites, rigs, animations, terrain, objects, and voxel models. |
 | `worlds` | Local generated/persisted world data. |
 | `docs` | Brainstorms, task plans, bug notes, and deeper design documents. |
 | `git` | Checked-out dependency sources and submodules. |
 | `certificates` | Local WebTransport certificates and digest. |
 | `scripts` | Setup and helper scripts. |
+
+## Nostr/Blossom Map Persistence
+
+Persistent maps still write to local filesystem stores first. When remote publishing is enabled, server-owned Overworld saves are tracked with per-map `remote_publish_journal.bin` entries, `local_head.bin`, and `accepted_head.bin`; failed remote publishes block later remote entries while preserving local files.

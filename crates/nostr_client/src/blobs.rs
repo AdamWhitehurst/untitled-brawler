@@ -54,8 +54,8 @@ pub enum BlobReadError {
 /// Blob upload failures.
 #[derive(Debug, Error)]
 pub enum BlobWriteError {
-    #[error("blob upload is not implemented: {0}")]
-    Unsupported(String),
+    #[error("invalid blob upload URL: {0}")]
+    InvalidUrl(String),
     #[error("blob HTTP request failed: {0}")]
     Http(String),
 }
@@ -99,6 +99,36 @@ pub fn verify_blob_bytes(
     Ok(VerifiedBlob {
         sha256: expected_sha256,
         bytes,
+    })
+}
+
+/// Uploads bytes to a Blossom-compatible endpoint and returns a content-addressed reference.
+pub async fn upload_blob(upload_url: &str, bytes: Vec<u8>) -> Result<BlobRef, BlobWriteError> {
+    let url = url::Url::parse(upload_url)
+        .map_err(|error| BlobWriteError::InvalidUrl(error.to_string()))?;
+    if url.scheme() != "https" && cfg!(not(test)) {
+        return Err(BlobWriteError::InvalidUrl(format!(
+            "blob upload URL must use https: {url}"
+        )));
+    }
+    let response = reqwest::Client::new()
+        .put(url.clone())
+        .body(bytes.clone())
+        .send()
+        .await
+        .map_err(|error| BlobWriteError::Http(error.to_string()))?;
+    if !response.status().is_success() {
+        return Err(BlobWriteError::Http(format!(
+            "blob upload failed with status {}",
+            response.status()
+        )));
+    }
+    let sha256 = Sha256::digest(&bytes).into();
+    Ok(BlobRef {
+        sha256,
+        size: bytes.len() as u64,
+        content_type: "application/octet-stream".to_string(),
+        urls: vec![url.to_string()],
     })
 }
 
