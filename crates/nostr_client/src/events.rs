@@ -152,6 +152,7 @@ pub struct NostrEventClient {
 
 enum NostrEventSource {
     Sdk(nostr_sdk::Client),
+    #[cfg(any(test, feature = "test-fixtures"))]
     Static(Vec<String>),
 }
 
@@ -164,6 +165,7 @@ impl NostrEventClient {
     }
 
     /// Creates an in-memory event client for deterministic tests.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn from_events(events: Vec<String>) -> Self {
         Self {
             source: Arc::new(NostrEventSource::Static(events)),
@@ -174,6 +176,7 @@ impl NostrEventClient {
     pub async fn query(&self, query: NostrEventQuery) -> Result<Vec<String>, NostrEventError> {
         match self.source.as_ref() {
             NostrEventSource::Sdk(client) => query_sdk(client, query).await,
+            #[cfg(any(test, feature = "test-fixtures"))]
             NostrEventSource::Static(events) => query_static(events, &query),
         }
     }
@@ -260,6 +263,7 @@ async fn query_sdk(
     Ok(events.into_iter().map(|event| event.as_json()).collect())
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
 fn query_static(
     events: &[String],
     query: &NostrEventQuery,

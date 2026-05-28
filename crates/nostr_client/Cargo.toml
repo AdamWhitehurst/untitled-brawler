@@ -3,6 +3,10 @@ name = "nostr_client"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+test-fixtures = []
+
 [dependencies]
 bevy = { workspace = true, features = ["bevy_log"] }
 protocol = { workspace = true }

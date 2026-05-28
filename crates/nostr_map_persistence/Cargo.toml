@@ -15,4 +15,5 @@ url = "2"
 
 [dev-dependencies]
 futures-lite = "2"
+nostr_client = { workspace = true, features = ["test-fixtures"] }
 nostr-sdk = { version = "0.44", features = ["nip49"] }
