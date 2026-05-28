@@ -271,6 +271,16 @@ fn load_chunk_with_mismatched_chunk_size_errors() {
     assert_eq!(loaded.chunk_size, 16);
 }
 
+fn remote_publish_draft(revision: u64) -> server::persistence::ServerMapPublishDraft {
+    server::persistence::ServerMapPublishDraft {
+        local_revision_number: revision,
+        meta: nostr_map_persistence::PayloadSlotState::Empty,
+        chunks: Vec::new(),
+        chunk_entities: Vec::new(),
+        map_entities: nostr_map_persistence::PayloadSlotState::Empty,
+    }
+}
+
 fn remote_publish_entry(
     revision: u64,
     hash_byte: u8,
@@ -312,6 +322,24 @@ fn remote_publish_n_plus_one_waits_behind_failed_n() {
         journal.entries[1].status,
         server::persistence::RemotePublishStatus::Pending
     );
+}
+
+#[test]
+fn remote_publish_prepare_failure_blocks_later_attempts() {
+    let mut deltas = server::map::remote_publish::PendingRemotePublishDeltas::default();
+    deltas.queue.push_back(remote_publish_draft(1));
+    deltas.queue.push_back(remote_publish_draft(2));
+
+    let failed = deltas
+        .pop_front_for_prepare()
+        .expect("first draft should be prepared");
+    let blocked_revision = deltas.block_after_prepare_failure(failed);
+
+    assert_eq!(blocked_revision, 1);
+    assert!(deltas.is_prepare_blocked());
+    assert!(deltas.pop_front_for_prepare().is_none());
+    assert_eq!(deltas.queue.front().unwrap().local_revision_number, 1);
+    assert_eq!(deltas.queue.back().unwrap().local_revision_number, 2);
 }
 
 #[test]

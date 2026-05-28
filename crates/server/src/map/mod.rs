@@ -190,7 +190,7 @@ fn init_overworld_entity(
             );
             continue;
         }
-        pending_deltas.0.push_back(persisted.draft);
+        pending_deltas.queue.push_back(persisted.draft);
     }
 
     let mut map_commands = commands.spawn((

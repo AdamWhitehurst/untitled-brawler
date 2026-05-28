@@ -57,7 +57,34 @@ pub struct MapPayloadSaveFailed {
 
 /// Server-owned unpublished publish drafts waiting for remote journal conversion.
 #[derive(Component, Default)]
-pub struct PendingRemotePublishDeltas(pub VecDeque<ServerMapPublishDraft>);
+pub struct PendingRemotePublishDeltas {
+    pub queue: VecDeque<ServerMapPublishDraft>,
+    pub blocked_revision: Option<u64>,
+}
+
+impl PendingRemotePublishDeltas {
+    /// Returns whether remote publish preparation is blocked after a failed draft.
+    pub fn is_prepare_blocked(&self) -> bool {
+        self.blocked_revision.is_some()
+    }
+
+    /// Pops the next draft only when no earlier prepare failure blocks the queue.
+    pub fn pop_front_for_prepare(&mut self) -> Option<ServerMapPublishDraft> {
+        if self.is_prepare_blocked() {
+            None
+        } else {
+            self.queue.pop_front()
+        }
+    }
+
+    /// Restores a failed draft to the front and blocks later preparation attempts.
+    pub fn block_after_prepare_failure(&mut self, draft: ServerMapPublishDraft) -> u64 {
+        let blocked_revision = draft.local_revision_number;
+        self.blocked_revision = Some(blocked_revision);
+        self.queue.push_front(draft);
+        blocked_revision
+    }
+}
 
 /// In-memory correlation between filesystem save ids and publish drafts.
 #[derive(Resource, Default)]
@@ -577,7 +604,15 @@ pub fn prepare_pending_remote_publish_journal_entries(
             continue;
         }
         discard_already_journaled_deltas(map_id, &journal, &mut deltas);
-        let Some(draft) = deltas.0.pop_front() else {
+        if let Some(blocked_revision) = deltas.blocked_revision {
+            trace!(
+                ?map_id,
+                blocked_revision,
+                "remote publish preparation blocked after earlier failure"
+            );
+            continue;
+        }
+        let Some(draft) = deltas.pop_front_for_prepare() else {
             trace!(?map_id, "no unpublished remote publish draft to prepare");
             continue;
         };
@@ -651,8 +686,13 @@ fn poll_prepare_tasks(
                 );
             }
             Err(failure) => {
-                error!(?map_id, error = %failure.error, "failed to prepare remote publish journal entry");
-                deltas.0.push_front(failure.draft);
+                let blocked_revision = deltas.block_after_prepare_failure(failure.draft);
+                error!(
+                    ?map_id,
+                    blocked_revision,
+                    error = %failure.error,
+                    "failed to prepare remote publish journal entry; blocking later remote publish attempts until restart or manual retry"
+                );
             }
         }
     }
@@ -663,13 +703,19 @@ fn discard_already_journaled_deltas(
     journal: &RemotePublishJournal,
     deltas: &mut PendingRemotePublishDeltas,
 ) {
-    while let Some(draft) = deltas.0.front() {
+    while let Some(draft) = deltas.queue.front() {
         if !journal.entries.iter().any(|entry| {
             entry.advances_local_head.local_revision_number >= draft.local_revision_number
         }) {
             break;
         }
-        let draft = deltas.0.pop_front().expect("front draft was just observed");
+        let draft = deltas
+            .queue
+            .pop_front()
+            .expect("front draft was just observed");
+        if deltas.blocked_revision == Some(draft.local_revision_number) {
+            deltas.blocked_revision = None;
+        }
         trace!(
             ?map_id,
             local_revision_number = draft.local_revision_number,
@@ -831,7 +877,7 @@ pub fn handle_completed_map_payload_save_for_publish(
         deltas
             .get_mut(event.map_entity)
             .expect("map with publishable save must have PendingRemotePublishDeltas")
-            .0
+            .queue
             .push_back(draft);
     }
 }
@@ -851,7 +897,7 @@ pub fn recover_unpublished_publish_drafts(
                     "unpublished draft map id does not match owning map".to_string(),
                 ));
             }
-            deltas.0.push_back(persisted.draft);
+            deltas.queue.push_back(persisted.draft);
         }
     }
     Ok(())
