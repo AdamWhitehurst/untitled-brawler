@@ -3,13 +3,16 @@ pub mod fs_map_meta;
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use bevy::prelude::*;
 use nostr_map_persistence::{
-    ManifestHash, MapPersistenceRejection, MapRevision, PayloadClass, PayloadSlotState,
+    ManifestHash, MapPersistenceRejection, MapRevision, PayloadClass, PayloadKey, PayloadSlotState,
+    RawChunkEntitiesPayload, RawChunkPayload, RawMapEntitiesPayload, RawMapMetaPayload,
+    RawValidatedMapDelta, RawValidatedMapSave,
 };
 use persistence::{PersistenceError, Store, StoreBackend};
 use protocol::map::SavedEntity;
@@ -50,6 +53,161 @@ pub struct ServerValidatedMapDelta {
     pub chunks: Vec<(IVec3, PayloadSlotState<ChunkFileEnvelope>)>,
     pub chunk_entities: Vec<(IVec3, PayloadSlotState<Vec<WorldObjectSpawn>>)>,
     pub map_entities: PayloadSlotState<Vec<SavedEntity>>,
+}
+
+impl TryFrom<RawValidatedMapSave> for ServerValidatedMapSave {
+    type Error = MapPersistenceRejection;
+
+    fn try_from(raw: RawValidatedMapSave) -> Result<Self, Self::Error> {
+        let meta = decode_map_meta_payload(raw.meta)?;
+        let chunks = raw
+            .chunks
+            .into_iter()
+            .map(|(key, payload)| Ok((chunk_key_to_ivec3(key)?, decode_chunk_envelope(payload)?)))
+            .collect::<Result<Vec<_>, MapPersistenceRejection>>()?;
+        let chunk_entities = raw
+            .chunk_entities
+            .into_iter()
+            .map(|(key, payload)| {
+                Ok((
+                    chunk_key_to_ivec3(key)?,
+                    decode_chunk_entities_payload(payload)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, MapPersistenceRejection>>()?;
+        let map_entities = raw
+            .map_entities
+            .map(decode_map_entities_payload)
+            .transpose()?;
+        Ok(Self {
+            meta,
+            chunks,
+            chunk_entities,
+            map_entities,
+            revision: raw.revision,
+        })
+    }
+}
+
+impl TryFrom<RawValidatedMapDelta> for ServerValidatedMapDelta {
+    type Error = MapPersistenceRejection;
+
+    fn try_from(raw: RawValidatedMapDelta) -> Result<Self, Self::Error> {
+        Ok(Self {
+            revision: raw.revision,
+            meta: try_map_slot(raw.meta, decode_map_meta_payload)?,
+            chunks: try_map_keyed_slots(raw.chunks, decode_chunk_envelope)?,
+            chunk_entities: try_map_keyed_slots(raw.chunk_entities, decode_chunk_entities_payload)?,
+            map_entities: try_map_slot(raw.map_entities, decode_map_entities_payload)?,
+        })
+    }
+}
+
+fn try_map_slot<T, U>(
+    slot: PayloadSlotState<T>,
+    decode: impl FnOnce(T) -> Result<U, MapPersistenceRejection>,
+) -> Result<PayloadSlotState<U>, MapPersistenceRejection> {
+    match slot {
+        PayloadSlotState::Present(value) => Ok(PayloadSlotState::Present(decode(value)?)),
+        PayloadSlotState::Empty => Ok(PayloadSlotState::Empty),
+        PayloadSlotState::Absent => Ok(PayloadSlotState::Absent),
+        PayloadSlotState::Tombstoned => Ok(PayloadSlotState::Tombstoned),
+    }
+}
+
+fn try_map_keyed_slots<T, U>(
+    slots: Vec<(PayloadKey, PayloadSlotState<T>)>,
+    decode_value: impl Fn(T) -> Result<U, MapPersistenceRejection>,
+) -> Result<Vec<(IVec3, PayloadSlotState<U>)>, MapPersistenceRejection> {
+    slots
+        .into_iter()
+        .map(|(key, slot)| Ok((chunk_key_to_ivec3(key)?, try_map_slot(slot, &decode_value)?)))
+        .collect()
+}
+
+fn chunk_key_to_ivec3(key: PayloadKey) -> Result<IVec3, MapPersistenceRejection> {
+    match key {
+        PayloadKey::Chunk { x, y, z } => Ok(IVec3::new(x, y, z)),
+        PayloadKey::Singleton => Err(MapPersistenceRejection::Invalid(
+            "expected chunk payload key, got singleton".to_string(),
+        )),
+    }
+}
+
+fn decode_map_meta_payload(payload: RawMapMetaPayload) -> Result<MapMeta, MapPersistenceRejection> {
+    bincode::deserialize(&payload.bytes)
+        .map_err(|error| MapPersistenceRejection::Invalid(format!("decode map meta: {error}")))
+}
+
+fn decode_chunk_envelope(
+    payload: RawChunkPayload,
+) -> Result<ChunkFileEnvelope, MapPersistenceRejection> {
+    let envelope = zstd_bincode_decode::<ChunkFileEnvelope>(&payload.bytes, "chunk payload")?;
+    if envelope.version != voxel_map_engine::persistence::CHUNK_SAVE_VERSION {
+        return Err(MapPersistenceRejection::Invalid(format!(
+            "chunk payload version mismatch: expected {}, got {}",
+            voxel_map_engine::persistence::CHUNK_SAVE_VERSION,
+            envelope.version
+        )));
+    }
+    Ok(envelope)
+}
+
+fn decode_chunk_entities_payload(
+    payload: RawChunkEntitiesPayload,
+) -> Result<Vec<WorldObjectSpawn>, MapPersistenceRejection> {
+    if payload.bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    #[derive(Deserialize)]
+    struct ChunkEntityPayloadEnvelope {
+        version: u32,
+        spawns: Vec<WorldObjectSpawn>,
+    }
+    const CHUNK_ENTITY_SAVE_VERSION: u32 = 3;
+    let envelope = zstd_bincode_decode::<ChunkEntityPayloadEnvelope>(
+        &payload.bytes,
+        "chunk entities payload",
+    )?;
+    if envelope.version != CHUNK_ENTITY_SAVE_VERSION {
+        return Err(MapPersistenceRejection::Invalid(format!(
+            "chunk entities payload version mismatch: expected {CHUNK_ENTITY_SAVE_VERSION}, got {}",
+            envelope.version
+        )));
+    }
+    Ok(envelope.spawns)
+}
+
+fn decode_map_entities_payload(
+    payload: RawMapEntitiesPayload,
+) -> Result<Vec<SavedEntity>, MapPersistenceRejection> {
+    if payload.bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let envelope: EntityFileEnvelope = bincode::deserialize(&payload.bytes).map_err(|error| {
+        MapPersistenceRejection::Invalid(format!("decode map entities: {error}"))
+    })?;
+    if envelope.version != ENTITY_SAVE_VERSION {
+        return Err(MapPersistenceRejection::Invalid(format!(
+            "map entities payload version mismatch: expected {ENTITY_SAVE_VERSION}, got {}",
+            envelope.version
+        )));
+    }
+    Ok(envelope.entities)
+}
+
+fn zstd_bincode_decode<T: for<'de> Deserialize<'de>>(
+    bytes: &[u8],
+    label: &str,
+) -> Result<T, MapPersistenceRejection> {
+    let mut decoder = zstd::Decoder::new(bytes)
+        .map_err(|error| MapPersistenceRejection::Invalid(format!("zstd {label}: {error}")))?;
+    let mut decoded = Vec::new();
+    decoder
+        .read_to_end(&mut decoded)
+        .map_err(|error| MapPersistenceRejection::Invalid(format!("read {label}: {error}")))?;
+    bincode::deserialize(&decoded)
+        .map_err(|error| MapPersistenceRejection::Invalid(format!("decode {label}: {error}")))
 }
 
 /// Resource holding the base save directory path.
@@ -99,6 +257,14 @@ impl Default for RemoteMapPersistenceConfig {
 /// Test/local-harness remote restore source using production-shaped validated saves.
 #[derive(Resource, Clone, Debug, Default)]
 pub struct FakeRemoteMapRestores(pub HashMap<MapInstanceId, ServerValidatedMapSave>);
+
+/// Optional real Nostr/Blossom read context used by server preflight.
+#[derive(Resource, Clone)]
+pub struct RemoteMapReadContext {
+    pub event_client: nostr_client::events::NostrEventClient,
+    pub query_policy: nostr_map_persistence::NostrMapQueryPolicy,
+    pub persistence_policy: nostr_map_persistence::MapPersistencePolicy,
+}
 
 /// Local filesystem head that may be newer than the accepted remote manifest.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

@@ -15,6 +15,13 @@ pub struct RelayPool {
     pub ready_rx: Receiver<()>,
 }
 
+impl RelayPool {
+    /// Returns a generic event-query client backed by this relay pool.
+    pub fn event_client(&self) -> crate::events::NostrEventClient {
+        crate::events::NostrEventClient::from_client(self.client.clone())
+    }
+}
+
 pub fn relay_pool_ready(pool: Res<RelayPoolReady>) -> bool {
     pool.0
 }

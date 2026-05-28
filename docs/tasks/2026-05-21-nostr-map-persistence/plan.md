@@ -2331,10 +2331,10 @@ impl RelayPool {
 
 #### Automated
 
-- [ ] `if pgrep -af 'cargo (build|check|test)|cargo-make|rustc' | grep -v pgrep; then echo busy >&2; exit 1; fi`
-- [ ] `cargo test -p nostr_map_persistence map_persistence`
-- [ ] `cargo test -p nostr_client blobs events relay_pool`
-- [ ] `cargo test -p server remote_restore`
+- [x] `if pgrep -af 'cargo (build|check|test)|cargo-make|rustc' | grep -v pgrep; then echo busy >&2; exit 1; fi`
+- [x] `cargo test -p nostr_map_persistence map_persistence`
+- [x] `cargo test -p nostr_client`
+- [x] `cargo test -p server remote_restore`
 
 #### Manual
 

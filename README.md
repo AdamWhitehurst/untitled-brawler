@@ -146,8 +146,8 @@ Gameplay hotkeys are filtered through client-local input ownership so focused UI
 | `crates/dev` | Dev inspector, physics debug, spawn/world/terrain panels. |
 | `crates/voxel_map_engine` | Voxel terrain generation, chunk lifecycle, meshing, brush edits, and map internals. |
 | `crates/sprite_rig` | Sprite rig assets, animation loading, and billboarded rig spawning. |
-| `crates/nostr_client` | Nostr relay pool, encrypted identity, server announcements, and auth helpers. |
-| `crates/nostr_map_persistence` | Shared Nostr map persistence DTOs, manifest descriptors, remote lookup keys, and rejection types. |
+| `crates/nostr_client` | Nostr relay pool, encrypted identity, server announcements, auth helpers, generic event queries, and verified blob helpers. |
+| `crates/nostr_map_persistence` | Shared Nostr map persistence DTOs, signed manifest verification, query policies, remote read helpers, and store adapters. |
 | `assets` | Game data, sprites, rigs, animations, terrain, objects, and voxel models. |
 | `worlds` | Local generated/persisted world data. |
 | `docs` | Brainstorms, task plans, bug notes, and deeper design documents. |

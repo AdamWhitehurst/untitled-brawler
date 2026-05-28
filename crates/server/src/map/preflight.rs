@@ -1,6 +1,9 @@
 use bevy::prelude::*;
 use lightyear::prelude::MessageSender;
-use nostr_map_persistence::MapPersistenceRejection;
+use nostr_map_persistence::{
+    download_payloads, fetch_manifest_ancestors, latest_visible_manifest, validate_remote_map_save,
+    verify_revision_chain, MapPersistenceRejection, RawSaveBase, RevisionDecision,
+};
 use persistence::{PendingStoreOps, StoreBackend};
 use protocol::map::MapTransitionStart;
 use protocol::{MapInstanceId, MapRegistry, RespawnPoint, TerrainDefRegistry};
@@ -10,7 +13,7 @@ use crate::persistence::fs_map_meta::FsMapMetaStore;
 use crate::persistence::{
     install_active_revision_store_backends, map_save_dir, materialize_validated_map_save,
     store_map_dir_for_loading, FakeRemoteMapRestores, MapMeta, RemoteMapPersistenceConfig,
-    WorldSavePath,
+    RemoteMapReadContext, WorldSavePath,
 };
 
 use super::{
@@ -57,6 +60,8 @@ pub fn poll_map_persistence_preflight(
     save_path: Res<WorldSavePath>,
     remote_config: Res<RemoteMapPersistenceConfig>,
     fake_remote_restores: Option<Res<FakeRemoteMapRestores>>,
+    remote_read_context: Option<Res<RemoteMapReadContext>>,
+    server_identity: Res<nostr_client::ServerIdentity>,
     terrain_registry: Option<Res<TerrainDefRegistry>>,
     type_registry: Res<AppTypeRegistry>,
 ) {
@@ -107,19 +112,13 @@ pub fn poll_map_persistence_preflight(
                     .pop()
                     .expect("checked completed filesystem metadata load exists");
                 let decision = if remote_config.enabled {
-                    fake_remote_restores
-                        .as_ref()
-                        .and_then(|remote| remote.0.get(&preflight.request.target_map_id).cloned())
-                        .map(MapPersistencePreflightDecision::UseRemote)
-                        .unwrap_or_else(|| {
-                            trace!(
-                                ?preflight.request.target_map_id,
-                                "remote persistence enabled but fake remote restore is unavailable; falling back"
-                            );
-                            loaded_meta
-                                .map(MapPersistencePreflightDecision::UseFilesystem)
-                                .unwrap_or(MapPersistencePreflightDecision::RemoteUnavailable)
-                        })
+                    remote_preflight_decision(
+                        &preflight.request.target_map_id,
+                        map_remote_owner(&preflight.request.target_map_id, &server_identity),
+                        loaded_meta.clone(),
+                        fake_remote_restores.as_deref(),
+                        remote_read_context.as_deref(),
+                    )
                 } else {
                     loaded_meta
                         .map(MapPersistencePreflightDecision::UseFilesystem)
@@ -152,6 +151,98 @@ pub fn poll_map_persistence_preflight(
                 continue;
             }
         }
+    }
+}
+
+fn map_remote_owner(
+    map_id: &MapInstanceId,
+    server_identity: &nostr_client::ServerIdentity,
+) -> protocol::NostrPublicKey {
+    match map_id {
+        MapInstanceId::Overworld => {
+            protocol::NostrPublicKey(*server_identity.keys.public_key().as_bytes())
+        }
+        MapInstanceId::Homebase { owner } => *owner,
+    }
+}
+
+fn remote_preflight_decision(
+    target_map_id: &MapInstanceId,
+    owner: protocol::NostrPublicKey,
+    loaded_meta: Option<MapMeta>,
+    fake_remote_restores: Option<&FakeRemoteMapRestores>,
+    remote_read_context: Option<&RemoteMapReadContext>,
+) -> MapPersistencePreflightDecision {
+    if let Some(save) = fake_remote_restores.and_then(|remote| remote.0.get(target_map_id).cloned())
+    {
+        return MapPersistencePreflightDecision::UseRemote(save);
+    }
+
+    let Some(remote_read_context) = remote_read_context else {
+        trace!(
+            ?target_map_id,
+            "remote persistence enabled but no fake or real remote read context is configured; falling back"
+        );
+        return loaded_meta
+            .map(MapPersistencePreflightDecision::UseFilesystem)
+            .unwrap_or(MapPersistencePreflightDecision::RemoteUnavailable);
+    };
+
+    if matches!(target_map_id, MapInstanceId::Homebase { .. }) {
+        warn!(
+            ?target_map_id,
+            "temporary insecure Phase 3 homebase remote import path is enabled; Phase 5 must require server attestation"
+        );
+    }
+
+    let result = bevy::tasks::block_on(async {
+        let Some(head) = latest_visible_manifest(
+            &remote_read_context.event_client,
+            owner,
+            target_map_id,
+            remote_read_context.query_policy.clone(),
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        let chain = fetch_manifest_ancestors(
+            &remote_read_context.event_client,
+            &head,
+            None,
+            remote_read_context.query_policy.clone(),
+        )
+        .await?;
+        match verify_revision_chain(&chain, None)? {
+            RevisionDecision::AtAcceptedHead => return Ok(None),
+            RevisionDecision::Descendant(_) => {}
+        }
+        let payloads =
+            download_payloads(&chain, remote_read_context.persistence_policy.clone()).await?;
+        let raw_save = validate_remote_map_save(
+            chain,
+            payloads,
+            remote_read_context.persistence_policy.clone(),
+            RawSaveBase::Empty,
+        )?;
+        let save = raw_save.try_into()?;
+        Ok::<_, MapPersistenceRejection>(Some(save))
+    });
+
+    match result {
+        Ok(Some(save)) => MapPersistencePreflightDecision::UseRemote(save),
+        Ok(None) => loaded_meta
+            .map(MapPersistencePreflightDecision::UseFilesystem)
+            .unwrap_or(MapPersistencePreflightDecision::Missing),
+        Err(MapPersistenceRejection::Unavailable(_)) => loaded_meta
+            .map(MapPersistencePreflightDecision::UseFilesystem)
+            .unwrap_or(MapPersistencePreflightDecision::RemoteUnavailable),
+        Err(rejection @ MapPersistenceRejection::Invalid(_))
+        | Err(rejection @ MapPersistenceRejection::Incomplete(_))
+        | Err(rejection @ MapPersistenceRejection::Divergent(_)) => {
+            MapPersistencePreflightDecision::Blocked(rejection)
+        }
+        Err(rejection) => MapPersistencePreflightDecision::Blocked(rejection),
     }
 }
 
