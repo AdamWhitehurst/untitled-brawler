@@ -1399,8 +1399,8 @@ Add or update tests to prove materialized chunks are loadable by `FsChunkStore` 
 
 #### Manual
 
-- [ ] Create a temp `worlds/` directory with no local save, enable the fake remote test resource in a local harness, and confirm `map.meta.bin`, chunk files, entity files, and `accepted_head.bin` appear only after a complete valid chain.
-- [ ] Interrupt a materialization run while a staging directory exists and confirm the next startup removes incomplete staging data before loading.
+- [x] Create a temp `worlds/` directory with no local save, enable the fake remote test resource in a local harness, and confirm `map.meta.bin`, chunk files, entity files, and `accepted_head.bin` appear only after a complete valid chain.
+- [x] Interrupt a materialization run while a staging directory exists and confirm the next startup removes incomplete staging data before loading.
 
 ---
 
