@@ -3041,8 +3041,8 @@ Add tests proving chunk-entity changes enqueue/publish alongside terrain and pre
 
 #### Manual
 
-- [ ] Run a server with fake remote publisher, make two overworld edits quickly, and confirm logs show only one in-flight publish for `Overworld`.
-- [ ] Force the first fake publish to fail and confirm later entries wait while local filesystem saves still advance.
+- [ ] Run a server with remote publishing enabled (`SERVER_MAP_REMOTE_PUBLISH=1`, `SERVER_BLOSSOM_UPLOAD_URL`, `SERVER_BLOSSOM_PUBLIC_BASE_URL`, `NOSTR_RELAYS`), make two overworld edits quickly, and confirm logs show only one in-flight publish for `Overworld`.
+- [ ] Force the first manifest publish to fail with `SERVER_MAP_REMOTE_PUBLISH_FAIL_FIRST=1` and confirm later entries wait while local filesystem saves still advance.
 
 ---
 

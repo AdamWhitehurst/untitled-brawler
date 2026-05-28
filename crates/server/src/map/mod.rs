@@ -41,7 +41,7 @@ use crate::persistence::fs_map_meta::FsMapMetaStore;
 use crate::persistence::{
     map_save_dir, store_map_dir_for_loading, FsAcceptedMapHeadStore, FsLocalMapHeadStore,
     FsLocalUnpublishedPublishDraftStore, FsRemotePublishJournalStore, MapMeta,
-    RemoteMapPersistenceConfig, RemotePublishJournal, ServerMapPublishDraft, WorldSavePath,
+    RemoteMapPersistenceConfig, ServerMapPublishDraft, WorldSavePath,
 };
 use persistence::{PendingStoreOps, SaveOpIdAllocator, StoreBackend};
 use protocol::map::{ChunkEntityRef, MapSaveTarget, SavedEntity, SavedEntityKind};
@@ -140,6 +140,8 @@ fn init_overworld_entity(
     mut queue: ResMut<PendingMapPreflights>,
     save_path: Res<WorldSavePath>,
     server_identity: Res<nostr_client::ServerIdentity>,
+    remote_publish_config: Res<remote_publish::RemoteMapPublishConfig>,
+    relay_pool: Option<Res<nostr_client::RelayPool>>,
 ) {
     let canonical_map_dir = map_save_dir(&save_path.0, &MapInstanceId::Overworld);
     let map_dir = Arc::new(
@@ -147,49 +149,107 @@ fn init_overworld_entity(
             .expect("overworld active revision pointer must be valid before startup"),
     );
     let owner = NostrPublicKey(*server_identity.keys.public_key().as_bytes());
+    let accepted_head_store = FsAcceptedMapHeadStore {
+        map_dir: map_dir.clone(),
+    };
+    let local_head_store = FsLocalMapHeadStore {
+        map_dir: map_dir.clone(),
+    };
+    let draft_store = FsLocalUnpublishedPublishDraftStore {
+        map_dir: map_dir.clone(),
+    };
+    let journal_store = FsRemotePublishJournalStore {
+        save_root: save_path.0.clone(),
+    };
+    let mut journal = persistence::Store::load(&journal_store, &MapInstanceId::Overworld)
+        .expect("overworld remote publish journal should load during startup")
+        .unwrap_or_default();
+    let original_journal = journal.clone();
+    remote_publish::reset_inflight_publish_entries(&mut journal);
+    if journal != original_journal {
+        persistence::Store::save(&journal_store, &MapInstanceId::Overworld, &journal)
+            .expect("overworld remote publish journal should persist after startup recovery");
+    }
+    let mut pending_deltas = remote_publish::PendingRemotePublishDeltas::default();
+    for persisted in draft_store
+        .load_all()
+        .expect("overworld unpublished publish drafts should load during startup")
+    {
+        if persisted.map_id != MapInstanceId::Overworld {
+            panic!(
+                "overworld unpublished publish draft has mismatched map id {:?}",
+                persisted.map_id
+            );
+        }
+        if journal.entries.iter().any(|entry| {
+            entry.advances_local_head.local_revision_number >= persisted.draft.local_revision_number
+        }) {
+            trace!(
+                local_revision_number = persisted.draft.local_revision_number,
+                "unpublished publish draft already has a journal entry"
+            );
+            continue;
+        }
+        pending_deltas.0.push_back(persisted.draft);
+    }
 
-    let map = commands
-        .spawn((
-            MapInstanceId::Overworld,
-            protocol::map::Owner(owner),
-            MapLoadState::CheckingPersistence,
-            Transform::default(),
-        ))
-        .insert((
-            StoreBackend::new(FsMapMetaStore {
-                map_dir: map_dir.clone(),
+    let mut map_commands = commands.spawn((
+        MapInstanceId::Overworld,
+        protocol::map::Owner(owner),
+        MapLoadState::CheckingPersistence,
+        Transform::default(),
+    ));
+    map_commands.insert((
+        StoreBackend::new(FsMapMetaStore {
+            map_dir: map_dir.clone(),
+        }),
+        PendingStoreOps::<(), MapMeta>::default(),
+        StoreBackend::new(FsMapEntitiesStore {
+            map_dir: map_dir.clone(),
+        }),
+        PendingStoreOps::<(), Vec<SavedEntity>>::default(),
+        StoreBackend::new(FsChunkEntitiesStore {
+            map_dir: map_dir.clone(),
+        }),
+        PendingStoreOps::<IVec3, Vec<WorldObjectSpawn>>::default(),
+        StoreBackend::new(FsChunkStore {
+            map_dir: map_dir.clone(),
+        }),
+        PendingStoreOps::<IVec3, ChunkFileEnvelope>::default(),
+    ));
+    map_commands.insert((
+        StoreBackend::new(accepted_head_store),
+        StoreBackend::new(local_head_store),
+        StoreBackend::new(draft_store),
+        StoreBackend::new(journal_store),
+        journal,
+        pending_deltas,
+    ));
+    if remote_publish_config.enabled {
+        let relay_pool = relay_pool
+            .as_ref()
+            .expect("SERVER_MAP_REMOTE_PUBLISH=1 requires NostrClientPlugin RelayPool resource");
+        let upload_url = remote_publish_config
+            .blossom_upload_url
+            .clone()
+            .expect("enabled remote publish config must include Blossom upload URL");
+        map_commands.insert((
+            persistence::AsyncStoreBackend::new(nostr_map_persistence::BlossomBlobPutStore {
+                upload_url,
             }),
-            PendingStoreOps::<(), MapMeta>::default(),
-            StoreBackend::new(FsMapEntitiesStore {
-                map_dir: map_dir.clone(),
-            }),
-            PendingStoreOps::<(), Vec<SavedEntity>>::default(),
-            StoreBackend::new(FsChunkEntitiesStore {
-                map_dir: map_dir.clone(),
-            }),
-            PendingStoreOps::<IVec3, Vec<WorldObjectSpawn>>::default(),
-            StoreBackend::new(FsChunkStore {
-                map_dir: map_dir.clone(),
-            }),
-            PendingStoreOps::<IVec3, ChunkFileEnvelope>::default(),
-        ))
-        .insert((
-            StoreBackend::new(FsAcceptedMapHeadStore {
-                map_dir: map_dir.clone(),
-            }),
-            StoreBackend::new(FsLocalMapHeadStore {
-                map_dir: map_dir.clone(),
-            }),
-            StoreBackend::new(FsLocalUnpublishedPublishDraftStore {
-                map_dir: map_dir.clone(),
-            }),
-            StoreBackend::new(FsRemotePublishJournalStore {
-                save_root: save_path.0.clone(),
-            }),
-            RemotePublishJournal::default(),
-            remote_publish::PendingRemotePublishDeltas::default(),
-        ))
-        .id();
+            persistence::AsyncStoreBackend::new(remote_publish::ServerManifestPublishStore::new(
+                relay_pool.event_client(),
+                remote_publish_config.fail_first_manifest_publish,
+            )),
+            persistence::PendingAsyncStoreOps::<nostr_map_persistence::ManifestHash, String>::default(
+            ),
+            remote_publish::PendingRemotePublishEntryTasks::default(),
+        ));
+        info!("server-owned Overworld remote publishing enabled");
+    } else {
+        trace!("server-owned Overworld remote publishing disabled");
+    }
+    let map = map_commands.id();
 
     registry.insert(MapInstanceId::Overworld, map);
     queue.0.push_back(PendingMapPreflight {
@@ -416,6 +476,7 @@ fn save_dirty_chunks_debounced(
     respawn_query: Query<(&Position, &MapInstanceId), With<RespawnPoint>>,
     mut save_ids: ResMut<SaveOpIdAllocator>,
     mut pending_publish: ResMut<remote_publish::PendingPublishBySaveId>,
+    remote_publish_config: Res<remote_publish::RemoteMapPublishConfig>,
 ) {
     if !dirty_state.is_dirty {
         return;
@@ -464,7 +525,7 @@ fn save_dirty_chunks_debounced(
             generation_version: config.generation_version,
             spawn_points,
         };
-        if matches!(map_id, MapInstanceId::Overworld) {
+        if matches!(map_id, MapInstanceId::Overworld) && remote_publish_config.enabled {
             let save_id = save_ids.allocate();
             let map_entities = by_map.get(map_id).cloned().unwrap_or_default();
             pending_publish.0.insert(
@@ -781,6 +842,7 @@ impl Plugin for ServerMapPlugin {
             .init_resource::<PendingVoxelBroadcasts>()
             .init_resource::<PendingMapPreflights>()
             .init_resource::<RemoteMapPersistenceConfig>()
+            .init_resource::<remote_publish::RemoteMapPublishConfig>()
             .init_resource::<WorldSavePath>()
             .init_resource::<SaveOpIdAllocator>()
             .init_resource::<remote_publish::PendingPublishBySaveId>()
@@ -834,7 +896,10 @@ impl Plugin for ServerMapPlugin {
                 (
                     remote_publish::normalize_chunk_save_completions,
                     remote_publish::handle_completed_map_payload_save_for_publish,
-                    remote_publish::poll_remote_publish_journal,
+                    remote_publish::prepare_pending_remote_publish_journal_entries
+                        .run_if(remote_publish::remote_map_publish_enabled),
+                    remote_publish::poll_remote_publish_journal
+                        .run_if(remote_publish::remote_map_publish_enabled),
                 ),
             )
             .add_systems(

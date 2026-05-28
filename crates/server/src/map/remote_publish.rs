@@ -1,13 +1,16 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use bevy::ecs::message::{MessageReader, MessageWriter};
 use bevy::prelude::*;
+use bevy::tasks::Task;
 use nostr_client::BlobRef;
 use nostr_map_persistence::{
     build_signed_map_manifest_event, compute_descriptor_root, manifest_payload_descriptor_order,
     ManifestHash, ManifestPayloadDescriptor, ManifestPayloadSlot, MapManifestSigner,
-    MapPersistenceRejection, MapRevision, NostrMapManifest, PayloadClass, PayloadKey,
-    PayloadSlotState, MAP_MANIFEST_SCHEMA_VERSION,
+    MapPersistenceRejection, MapRevision, NostrManifestPublishStore, NostrMapManifest,
+    PayloadClass, PayloadKey, PayloadSlotState, MAP_MANIFEST_SCHEMA_VERSION,
 };
 use persistence::{
     AsyncStore, AsyncStoreBackend, PendingAsyncStoreOps, PersistenceError, SaveOpId, Store,
@@ -60,11 +63,120 @@ pub struct PendingRemotePublishDeltas(pub VecDeque<ServerMapPublishDraft>);
 #[derive(Resource, Default)]
 pub struct PendingPublishBySaveId(pub HashMap<SaveOpId, ServerMapPublishDraft>);
 
+/// Runtime configuration for server-owned remote Overworld publishing.
+#[derive(Resource, Clone, Debug)]
+pub struct RemoteMapPublishConfig {
+    pub enabled: bool,
+    pub blossom_upload_url: Option<String>,
+    pub blossom_public_base_url: Option<url::Url>,
+    pub fail_first_manifest_publish: bool,
+}
+
+impl Default for RemoteMapPublishConfig {
+    fn default() -> Self {
+        let enabled = env_flag("SERVER_MAP_REMOTE_PUBLISH");
+        let fail_first_manifest_publish = env_flag("SERVER_MAP_REMOTE_PUBLISH_FAIL_FIRST");
+        if !enabled {
+            return Self {
+                enabled,
+                blossom_upload_url: None,
+                blossom_public_base_url: None,
+                fail_first_manifest_publish,
+            };
+        }
+
+        let blossom_upload_url = std::env::var("SERVER_BLOSSOM_UPLOAD_URL")
+            .expect("SERVER_MAP_REMOTE_PUBLISH=1 requires SERVER_BLOSSOM_UPLOAD_URL");
+        let blossom_public_base_url = std::env::var("SERVER_BLOSSOM_PUBLIC_BASE_URL")
+            .expect("SERVER_MAP_REMOTE_PUBLISH=1 requires SERVER_BLOSSOM_PUBLIC_BASE_URL");
+        let blossom_public_base_url = url::Url::parse(&blossom_public_base_url)
+            .expect("SERVER_BLOSSOM_PUBLIC_BASE_URL must be a valid URL");
+
+        Self {
+            enabled,
+            blossom_upload_url: Some(blossom_upload_url),
+            blossom_public_base_url: Some(blossom_public_base_url),
+            fail_first_manifest_publish,
+        }
+    }
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.as_str(),
+                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// Returns whether server-owned remote map publishing is enabled.
+pub fn remote_map_publish_enabled(config: Res<RemoteMapPublishConfig>) -> bool {
+    config.enabled
+}
+
 /// Tracks maps with an in-flight remote manifest publish.
 #[derive(Resource, Default)]
 pub struct RemoteMapPublishWorker {
     pub in_flight_by_map: HashSet<MapInstanceId>,
 }
+
+/// Pending async journal-entry preparation tasks for a map.
+#[derive(Component, Default)]
+pub struct PendingRemotePublishEntryTasks {
+    tasks: Vec<Task<RemotePublishPrepareResult>>,
+}
+
+/// Manifest publish store with optional one-shot failure injection for manual verification.
+#[derive(Clone)]
+pub struct ServerManifestPublishStore {
+    inner: NostrManifestPublishStore,
+    fail_next: Arc<AtomicBool>,
+}
+
+impl ServerManifestPublishStore {
+    pub fn new(client: nostr_client::events::NostrEventClient, fail_first_publish: bool) -> Self {
+        Self {
+            inner: NostrManifestPublishStore { client },
+            fail_next: Arc::new(AtomicBool::new(fail_first_publish)),
+        }
+    }
+}
+
+impl AsyncStore<ManifestHash, String> for ServerManifestPublishStore {
+    fn load<'a>(
+        &'a self,
+        key: &'a ManifestHash,
+    ) -> persistence::BoxedStoreFuture<'a, Result<Option<String>, PersistenceError>> {
+        self.inner.load(key)
+    }
+
+    fn save<'a>(
+        &'a self,
+        key: &'a ManifestHash,
+        value: &'a String,
+    ) -> persistence::BoxedStoreFuture<'a, Result<(), PersistenceError>> {
+        if self.fail_next.swap(false, Ordering::SeqCst) {
+            return Box::pin(async {
+                Err(PersistenceError::Serialize(
+                    "forced first remote manifest publish failure".to_string(),
+                ))
+            });
+        }
+        self.inner.save(key, value)
+    }
+}
+
+struct RemotePublishPrepareFailure {
+    draft: ServerMapPublishDraft,
+    error: MapPersistenceRejection,
+}
+
+type RemotePublishPrepareResult =
+    Result<crate::persistence::RemotePublishJournalEntry, RemotePublishPrepareFailure>;
 
 /// Local adapter implementing map manifest signing for the configured server identity.
 struct ServerManifestSigner<'a>(&'a nostr_client::ServerIdentity);
@@ -410,6 +522,162 @@ pub fn remote_publish_blocked_by_failed_entry(journal: &RemotePublishJournal) ->
         .any(|entry| entry.status == RemotePublishStatus::Failed)
 }
 
+/// Converts durable local unpublished drafts into signed remote publish journal entries.
+pub fn prepare_pending_remote_publish_journal_entries(
+    identity: Res<nostr_client::ServerIdentity>,
+    config: Res<RemoteMapPublishConfig>,
+    mut maps: Query<(
+        &MapInstanceId,
+        &StoreBackend<(), MapRevision, FsAcceptedMapHeadStore>,
+        &StoreBackend<MapInstanceId, RemotePublishJournal, FsRemotePublishJournalStore>,
+        &AsyncStoreBackend<BlobRef, Vec<u8>, nostr_map_persistence::BlossomBlobPutStore>,
+        &mut RemotePublishJournal,
+        &mut PendingRemotePublishDeltas,
+        &mut PendingRemotePublishEntryTasks,
+    )>,
+) {
+    if !config.enabled {
+        trace!("remote publish preparation skipped because remote publishing is disabled");
+        return;
+    }
+    let public_blossom_base_url = config
+        .blossom_public_base_url
+        .clone()
+        .expect("enabled remote publish config must include public Blossom base URL");
+
+    for (
+        map_id,
+        accepted_head_store,
+        journal_store,
+        blob_store,
+        mut journal,
+        mut deltas,
+        mut tasks,
+    ) in &mut maps
+    {
+        poll_prepare_tasks(
+            map_id,
+            &journal_store.0,
+            &mut journal,
+            &mut deltas,
+            &mut tasks,
+        );
+        if !tasks.tasks.is_empty() {
+            trace!(
+                ?map_id,
+                "remote publish journal entry preparation already in flight"
+            );
+            continue;
+        }
+        if remote_publish_blocked_by_failed_entry(&journal) {
+            trace!(
+                ?map_id,
+                "remote publish preparation blocked by earlier failed journal entry"
+            );
+            continue;
+        }
+        discard_already_journaled_deltas(map_id, &journal, &mut deltas);
+        let Some(draft) = deltas.0.pop_front() else {
+            trace!(?map_id, "no unpublished remote publish draft to prepare");
+            continue;
+        };
+        let previous_remote_manifest_hash = journal
+            .entries
+            .last()
+            .map(|entry| entry.new_manifest_hash)
+            .or_else(|| {
+                accepted_head_store
+                    .0
+                    .load(&())
+                    .expect("accepted map head store should load during remote publish preparation")
+                    .map(|head| head.manifest_hash)
+            });
+        let identity = identity.clone();
+        let blob_store = blob_store.0.clone();
+        let public_blossom_base_url = public_blossom_base_url.clone();
+        let draft_for_failure = draft.clone();
+        tasks
+            .tasks
+            .push(bevy::tasks::IoTaskPool::get().spawn(async move {
+                prepare_server_map_publish_entry(
+                    &identity,
+                    draft,
+                    previous_remote_manifest_hash,
+                    &blob_store,
+                    &public_blossom_base_url,
+                )
+                .await
+                .map_err(|error| RemotePublishPrepareFailure {
+                    draft: draft_for_failure,
+                    error,
+                })
+            }));
+    }
+}
+
+fn poll_prepare_tasks(
+    map_id: &MapInstanceId,
+    journal_store: &FsRemotePublishJournalStore,
+    journal: &mut RemotePublishJournal,
+    deltas: &mut PendingRemotePublishDeltas,
+    tasks: &mut PendingRemotePublishEntryTasks,
+) {
+    let mut index = 0;
+    while index < tasks.tasks.len() {
+        let Some(result) = bevy::tasks::futures::check_ready(&mut tasks.tasks[index]) else {
+            index += 1;
+            continue;
+        };
+        let _ = tasks.tasks.swap_remove(index);
+        match result {
+            Ok(entry) => {
+                if journal
+                    .entries
+                    .iter()
+                    .any(|existing| existing.new_manifest_hash == entry.new_manifest_hash)
+                {
+                    trace!(?map_id, ?entry.new_manifest_hash, "remote publish journal entry already exists");
+                    continue;
+                }
+                let manifest_hash = entry.new_manifest_hash;
+                journal.entries.push(entry);
+                journal_store
+                    .save(map_id, journal)
+                    .expect("remote publish journal should persist after preparing entry");
+                info!(
+                    ?map_id,
+                    ?manifest_hash,
+                    "queued remote publish journal entry"
+                );
+            }
+            Err(failure) => {
+                error!(?map_id, error = %failure.error, "failed to prepare remote publish journal entry");
+                deltas.0.push_front(failure.draft);
+            }
+        }
+    }
+}
+
+fn discard_already_journaled_deltas(
+    map_id: &MapInstanceId,
+    journal: &RemotePublishJournal,
+    deltas: &mut PendingRemotePublishDeltas,
+) {
+    while let Some(draft) = deltas.0.front() {
+        if !journal.entries.iter().any(|entry| {
+            entry.advances_local_head.local_revision_number >= draft.local_revision_number
+        }) {
+            break;
+        }
+        let draft = deltas.0.pop_front().expect("front draft was just observed");
+        trace!(
+            ?map_id,
+            local_revision_number = draft.local_revision_number,
+            "discarding already journaled remote publish draft"
+        );
+    }
+}
+
 /// Polls per-map remote publish journals while preserving serial ordering per map.
 pub fn poll_remote_publish_journal(
     mut worker: ResMut<RemoteMapPublishWorker>,
@@ -418,7 +686,7 @@ pub fn poll_remote_publish_journal(
         &StoreBackend<MapInstanceId, RemotePublishJournal, FsRemotePublishJournalStore>,
         &StoreBackend<(), MapRevision, FsAcceptedMapHeadStore>,
         &StoreBackend<(), LocalMapHead, FsLocalMapHeadStore>,
-        &AsyncStoreBackend<ManifestHash, String, nostr_map_persistence::NostrManifestPublishStore>,
+        &AsyncStoreBackend<ManifestHash, String, ServerManifestPublishStore>,
         &mut RemotePublishJournal,
         &mut PendingAsyncStoreOps<ManifestHash, String>,
     )>,

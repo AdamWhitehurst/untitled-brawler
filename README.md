@@ -158,3 +158,16 @@ Gameplay hotkeys are filtered through client-local input ownership so focused UI
 ## Nostr/Blossom Map Persistence
 
 Persistent maps still write to local filesystem stores first. When remote publishing is enabled, server-owned Overworld saves are tracked with per-map `remote_publish_journal.bin` entries, `local_head.bin`, and `accepted_head.bin`; failed remote publishes block later remote entries while preserving local files.
+
+Enable server-owned Overworld remote publishing with:
+
+```bash
+SERVER_MAP_REMOTE_PUBLISH=1 \
+SERVER_BLOSSOM_UPLOAD_URL='https://blossom.example/upload' \
+SERVER_BLOSSOM_PUBLIC_BASE_URL='https://blossom.example/' \
+SERVER_NSEC='nsec1...' \
+NOSTR_RELAYS='wss://relay.damus.io,wss://nos.lol' \
+cargo server
+```
+
+For manual failure-path testing, add `SERVER_MAP_REMOTE_PUBLISH_FAIL_FIRST=1` to force the first manifest publish to fail after Blossom payload upload.
