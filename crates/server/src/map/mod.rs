@@ -22,10 +22,9 @@ use lightyear::prelude::{
     ServerMultiMessageSender,
 };
 use protocol::{
-    CharacterMarker, ChunkChannel, ChunkDataSync, MapInstanceId, MapRegistry, NostrPublicKey,
-    SectionBlocksUpdate, UnloadColumn, VoxelBrushEditRequest, VoxelChange, VoxelChannel,
-    VoxelConcreteEditRequest, VoxelEditAck, VoxelEditBroadcast, VoxelEditReject, VoxelEditRequest,
-    VoxelType,
+    CharacterMarker, ChunkChannel, ChunkDataSync, MapInstanceId, MapRegistry, SectionBlocksUpdate,
+    UnloadColumn, VoxelBrushEditRequest, VoxelChange, VoxelChannel, VoxelConcreteEditRequest,
+    VoxelEditAck, VoxelEditBroadcast, VoxelEditReject, VoxelEditRequest, VoxelType,
 };
 #[allow(unused_imports)]
 use tracy_client::plot;
@@ -139,7 +138,7 @@ fn init_overworld_entity(
     mut registry: ResMut<MapRegistry>,
     mut queue: ResMut<PendingMapPreflights>,
     save_path: Res<WorldSavePath>,
-    server_identity: Res<nostr_client::ServerIdentity>,
+    server_identity: Res<nostr_client::NostrKeys>,
     remote_publish_config: Res<remote_publish::RemoteMapPublishConfig>,
     relay_pool: Option<Res<nostr_client::RelayPool>>,
 ) {
@@ -148,7 +147,7 @@ fn init_overworld_entity(
         store_map_dir_for_loading(&canonical_map_dir)
             .expect("overworld active revision pointer must be valid before startup"),
     );
-    let owner = NostrPublicKey(*server_identity.keys.public_key().as_bytes());
+    let owner = server_identity.protocol_public_key();
     let accepted_head_store = FsAcceptedMapHeadStore {
         map_dir: map_dir.clone(),
     };
@@ -236,6 +235,7 @@ fn init_overworld_entity(
         map_commands.insert((
             persistence::AsyncStoreBackend::new(nostr_map_persistence::BlossomBlobPutStore {
                 upload_url,
+                auth: nostr_client::BlossomAuth::from_keys(&server_identity),
             }),
             persistence::AsyncStoreBackend::new(remote_publish::ServerManifestPublishStore::new(
                 relay_pool.event_client(),
@@ -2227,6 +2227,7 @@ fn unload_stale_columns(
 mod tests {
     use super::*;
     use protocol::map::VoxelType;
+    use protocol::NostrPublicKey;
 
     fn make_edit(position: IVec3, voxel: VoxelType) -> PendingVoxelEdit {
         PendingVoxelEdit {

@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 use lightyear::prelude::*;
-use nostr_client::{build_identity_proof, ClientIdentity};
+use nostr_client::{build_identity_proof, NostrKeys};
 use protocol::{AuthChannel, IdentityChallenge, IdentityProof};
 
 pub struct ClientAuthPlugin;
@@ -9,20 +9,20 @@ impl Plugin for ClientAuthPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            handle_identity_challenge.run_if(resource_exists::<ClientIdentity>),
+            handle_identity_challenge.run_if(resource_exists::<NostrKeys>),
         );
     }
 }
 
 fn handle_identity_challenge(
-    identity: Res<ClientIdentity>,
+    identity: Res<NostrKeys>,
     mut receivers: Query<&mut MessageReceiver<IdentityChallenge>>,
     mut senders: Query<&mut MessageSender<IdentityProof>>,
 ) {
     for mut receiver in &mut receivers {
         for challenge in receiver.receive() {
             let proof = build_identity_proof(&identity, challenge.nonce)
-                .expect("ClientIdentity should sign identity proof");
+                .expect("NostrKeys should sign identity proof");
             for mut sender in &mut senders {
                 sender.send::<AuthChannel>(proof.clone());
             }

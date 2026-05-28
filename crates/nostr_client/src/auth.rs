@@ -1,25 +1,24 @@
 use nostr_sdk::{Event, EventBuilder, JsonUtil, Kind, Tag, TagKind};
 use protocol::{IdentityProof, NostrPublicKey, PlayerIdentity};
 
-use crate::ClientIdentity;
+use crate::NostrKeys;
 
 pub const NOSTR_KIND_AUTH: u16 = 22242;
 
 pub fn build_identity_proof(
-    identity: &ClientIdentity,
+    identity: &NostrKeys,
     nonce: [u8; 32],
 ) -> Result<IdentityProof, String> {
-    let keys = nostr_sdk::Keys::new(identity.secret.clone());
     let event = EventBuilder::new(Kind::Custom(NOSTR_KIND_AUTH), "")
         .tag(Tag::custom(
             TagKind::custom("challenge"),
             [hex::encode(nonce)],
         ))
-        .sign_with_keys(&keys)
+        .sign_with_keys(identity.keys())
         .map_err(|error| format!("sign identity proof: {error}"))?;
 
     Ok(IdentityProof {
-        pubkey: NostrPublicKey(*identity.public.as_bytes()),
+        pubkey: identity.protocol_public_key(),
         signed_event_json: event.as_json(),
     })
 }
@@ -72,8 +71,8 @@ mod tests {
     use super::*;
     use nostr_sdk::SecretKey;
 
-    fn identity() -> ClientIdentity {
-        ClientIdentity::from_secret(SecretKey::generate())
+    fn identity() -> NostrKeys {
+        NostrKeys::from_secret(SecretKey::generate())
     }
 
     #[test]

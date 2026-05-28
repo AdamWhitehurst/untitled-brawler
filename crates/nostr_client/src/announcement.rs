@@ -8,7 +8,7 @@ use nostr_sdk::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{relay_pool::RelayPool, ServerIdentity};
+use crate::{relay_pool::RelayPool, NostrKeys};
 
 pub const NOSTR_KIND_SERVER_ANNOUNCEMENT: u16 = 30078;
 pub const SERVER_ANNOUNCEMENT_VERSION: u32 = 1;
@@ -82,12 +82,12 @@ pub fn server_announcement_builder(
 
 pub async fn publish_server_announcement(
     client: Client,
-    identity: ServerIdentity,
+    identity: NostrKeys,
     announcement: ServerAnnouncement,
 ) -> Result<String, String> {
     let event = server_announcement_builder(&announcement)
         .map_err(|error| format!("serialize announcement: {error}"))?
-        .sign_with_keys(&identity.keys)
+        .sign_with_keys(identity.keys())
         .map_err(|error| format!("sign announcement: {error}"))?;
     let output = client
         .send_event(&event)

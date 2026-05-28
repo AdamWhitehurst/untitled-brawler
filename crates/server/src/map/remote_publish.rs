@@ -206,19 +206,19 @@ type RemotePublishPrepareResult =
     Result<crate::persistence::RemotePublishJournalEntry, RemotePublishPrepareFailure>;
 
 /// Local adapter implementing map manifest signing for the configured server identity.
-struct ServerManifestSigner<'a>(&'a nostr_client::ServerIdentity);
+struct ServerManifestSigner<'a>(&'a nostr_client::NostrKeys);
 
 impl MapManifestSigner for ServerManifestSigner<'_> {
     fn public_key(&self) -> NostrPublicKey {
-        NostrPublicKey(*self.0.keys.public_key().as_bytes())
+        self.0.protocol_public_key()
     }
 
     fn sign_map_manifest_event(
         &self,
         draft: nostr_client::events::NostrEventDraft,
     ) -> Result<String, nostr_map_persistence::RemotePersistenceError> {
-        draft
-            .sign_with_keys(&self.0.keys)
+        self.0
+            .sign_event(&draft)
             .map_err(nostr_map_persistence::RemotePersistenceError::from)
     }
 }
@@ -340,7 +340,7 @@ pub async fn upload_publish_slot<T>(
 
 /// Converts a server Overworld draft into a signed pending remote journal entry.
 pub async fn prepare_server_map_publish_entry(
-    identity: &nostr_client::ServerIdentity,
+    identity: &nostr_client::NostrKeys,
     draft: ServerMapPublishDraft,
     previous_remote_manifest_hash: Option<ManifestHash>,
     blob_store: &impl AsyncStore<BlobRef, Vec<u8>>,
@@ -551,7 +551,7 @@ pub fn remote_publish_blocked_by_failed_entry(journal: &RemotePublishJournal) ->
 
 /// Converts durable local unpublished drafts into signed remote publish journal entries.
 pub fn prepare_pending_remote_publish_journal_entries(
-    identity: Res<nostr_client::ServerIdentity>,
+    identity: Res<nostr_client::NostrKeys>,
     config: Res<RemoteMapPublishConfig>,
     mut maps: Query<(
         &MapInstanceId,

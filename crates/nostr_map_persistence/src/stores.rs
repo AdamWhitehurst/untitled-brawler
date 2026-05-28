@@ -134,6 +134,7 @@ impl AsyncStore<BlobFetchRequest, VerifiedBlob> for BlossomBlobStore {
 #[derive(Clone)]
 pub struct BlossomBlobPutStore {
     pub upload_url: String,
+    pub auth: nostr_client::BlossomAuth,
 }
 
 impl AsyncStore<BlobRef, Vec<u8>> for BlossomBlobPutStore {
@@ -158,11 +159,12 @@ impl AsyncStore<BlobRef, Vec<u8>> for BlossomBlobPutStore {
                 .map_err(|error| {
                     PersistenceError::Serialize(format!("verify upload blob bytes: {error}"))
                 })?;
-            let uploaded = nostr_client::blobs::upload_blob(&self.upload_url, value.clone())
-                .await
-                .map_err(|error| {
-                    PersistenceError::Serialize(format!("upload Blossom blob: {error}"))
-                })?;
+            let uploaded =
+                nostr_client::blobs::upload_blob(&self.upload_url, value.clone(), &self.auth)
+                    .await
+                    .map_err(|error| {
+                        PersistenceError::Serialize(format!("upload Blossom blob: {error}"))
+                    })?;
             if uploaded.sha256 != key.sha256 || uploaded.size != key.size {
                 return Err(PersistenceError::Serialize(format!(
                     "uploaded blob ref mismatch: expected {} bytes {:?}, got {} bytes {:?}",

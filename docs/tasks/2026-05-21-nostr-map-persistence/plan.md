@@ -2434,7 +2434,9 @@ Keep generic Nostr event publication and Blossom HTTP upload helpers in `nostr_c
 
 ```rust
 // crates/nostr_client/src/blobs.rs and src/events.rs
-pub async fn upload_blob(upload_url: &str, bytes: Vec<u8>) -> Result<BlobRef, BlobWriteError>;
+pub struct NostrKeys(nostr_sdk::Keys);
+pub struct BlossomAuth { /* signs BUD-11 kind 24242 upload tokens */ }
+pub async fn upload_blob(upload_url: &str, bytes: Vec<u8>, auth: &BlossomAuth) -> Result<BlobRef, BlobWriteError>;
 pub async fn publish_event(client: &NostrEventClient, event_json: String) -> Result<(), NostrEventError>;
 
 // crates/nostr_map_persistence/src/publish.rs
@@ -2475,6 +2477,7 @@ pub fn build_signed_map_manifest_event(
 #[derive(Clone)]
 pub struct BlossomBlobPutStore {
     pub upload_url: String,
+    pub auth: nostr_client::BlossomAuth,
 }
 
 impl AsyncStore<BlobRef, Vec<u8>> for BlossomBlobPutStore {
@@ -2489,7 +2492,7 @@ impl AsyncStore<BlobRef, Vec<u8>> for BlossomBlobPutStore {
         Box::pin(async move {
             nostr_client::blobs::verify_blob_bytes(expected.sha256, Some(expected.size), bytes.clone())
                 .map_err(|error| PersistenceError::Serialize(format!("verify upload blob bytes: {error}")))?;
-            let uploaded = nostr_client::blobs::upload_blob(&upload_url, bytes)
+            let uploaded = nostr_client::blobs::upload_blob(&upload_url, bytes, &self.auth)
                 .await
                 .map_err(|error| PersistenceError::Serialize(format!("upload Blossom blob: {error}")))?;
             if uploaded.sha256 != expected.sha256 || uploaded.size != expected.size {

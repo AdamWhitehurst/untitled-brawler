@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 use bevy_ui_text_input::TextInputBuffer;
 use nostr_client::{
-    generate_encrypted_identity, import_encrypted_identity, unlock_identity, ClientIdentity,
-    LoginError, SaveEncryptedIdentity, StoredEncryptedIdentity,
+    generate_encrypted_identity, import_encrypted_identity, unlock_identity, LoginError, NostrKeys,
+    SaveEncryptedIdentity, StoredEncryptedIdentity,
 };
 
 use crate::{components::*, state::ClientState, widgets};
@@ -91,7 +91,7 @@ pub fn login_button_interaction(
 
     match result {
         Ok((identity, encrypted)) => {
-            commands.insert_resource::<ClientIdentity>(identity);
+            commands.insert_resource::<NostrKeys>(identity);
             stored.0 = Some(encrypted.clone());
             save_writer.write(SaveEncryptedIdentity(encrypted));
             error.0 = None;

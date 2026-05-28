@@ -61,7 +61,7 @@ pub fn poll_map_persistence_preflight(
     remote_config: Res<RemoteMapPersistenceConfig>,
     fake_remote_restores: Option<Res<FakeRemoteMapRestores>>,
     remote_read_context: Option<Res<RemoteMapReadContext>>,
-    server_identity: Res<nostr_client::ServerIdentity>,
+    server_identity: Res<nostr_client::NostrKeys>,
     terrain_registry: Option<Res<TerrainDefRegistry>>,
     type_registry: Res<AppTypeRegistry>,
 ) {
@@ -156,12 +156,10 @@ pub fn poll_map_persistence_preflight(
 
 fn map_remote_owner(
     map_id: &MapInstanceId,
-    server_identity: &nostr_client::ServerIdentity,
+    server_identity: &nostr_client::NostrKeys,
 ) -> protocol::NostrPublicKey {
     match map_id {
-        MapInstanceId::Overworld => {
-            protocol::NostrPublicKey(*server_identity.keys.public_key().as_bytes())
-        }
+        MapInstanceId::Overworld => server_identity.protocol_public_key(),
         MapInstanceId::Homebase { owner } => *owner,
     }
 }

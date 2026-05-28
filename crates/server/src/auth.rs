@@ -86,9 +86,9 @@ fn validate_identity_proof(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostr_client::{build_identity_proof, generate_encrypted_identity, ClientIdentity};
+    use nostr_client::{build_identity_proof, generate_encrypted_identity, NostrKeys};
 
-    fn identity_and_proof(nonce: [u8; 32]) -> (ClientIdentity, IdentityProof) {
+    fn identity_and_proof(nonce: [u8; 32]) -> (NostrKeys, IdentityProof) {
         let (identity, _encrypted) = generate_encrypted_identity("test passphrase").unwrap();
         let proof = build_identity_proof(&identity, nonce).unwrap();
         (identity, proof)

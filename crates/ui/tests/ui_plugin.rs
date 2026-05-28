@@ -342,7 +342,7 @@ fn main_menu_refreshes_when_server_list_changes() {
         .resource_mut::<nostr_client::announcement::ServerList>()
         .entries
         .push(nostr_client::announcement::ServerListEntry {
-            pubkey: identity.public,
+            pubkey: identity.public_key(),
             addr: "127.0.0.1:6001".parse().unwrap(),
             cert_digest: "digest-from-announcement".to_string(),
             display_name: "Late Server".to_string(),
@@ -366,7 +366,7 @@ fn server_list_entry_sets_connection_config() {
     app.world_mut()
         .spawn((Name::new("Test Client"), Client::default()));
     let (identity, _) = nostr_client::generate_encrypted_identity("passphrase").unwrap();
-    let pubkey = identity.public;
+    let pubkey = identity.public_key();
     app.insert_resource(identity);
     app.world_mut()
         .resource_mut::<nostr_client::announcement::ServerList>()

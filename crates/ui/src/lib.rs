@@ -12,7 +12,7 @@ use lightyear::prelude::{client::*, Controlled, Replicated};
 use lightyear::prelude::{Authentication, MessageSender, PeerAddr, Predicted};
 use lightyear::webtransport::client::WebTransportClientIo;
 use nostr_client::announcement::ServerList;
-use nostr_client::{ClientIdentity, LoginError, StoredEncryptedIdentity};
+use nostr_client::{LoginError, NostrKeys, StoredEncryptedIdentity};
 use protocol::map::{MapChannel, MapSwitchTarget, PlayerMapSwitchRequest};
 use protocol::{
     CharacterMarker, DummyTarget, MapInstanceId, PendingTransition, PRIVATE_KEY, PROTOCOL_ID,
@@ -169,7 +169,7 @@ fn on_client_disconnected(
     _trigger: On<Add, Disconnected>,
     mut next_state: ResMut<NextState<ClientState>>,
     current_state: Res<State<ClientState>>,
-    identity: Option<Res<ClientIdentity>>,
+    identity: Option<Res<NostrKeys>>,
 ) {
     match *current_state.get() {
         ClientState::Loading | ClientState::Login | ClientState::MainMenu => {}
@@ -308,7 +308,7 @@ fn main_menu_button_interaction(
     mut next_state: ResMut<NextState<ClientState>>,
     mut exit_writer: MessageWriter<AppExit>,
     mut config: ResMut<UiClientConfig>,
-    identity: Option<Res<ClientIdentity>>,
+    identity: Option<Res<NostrKeys>>,
     entry_query: Query<(&Interaction, &ServerListEntryButton), Changed<Interaction>>,
     quit_query: Query<&Interaction, (Changed<Interaction>, With<QuitButton>)>,
 ) {
@@ -316,12 +316,12 @@ fn main_menu_button_interaction(
         if *interaction == Interaction::Pressed {
             let identity = identity
                 .as_ref()
-                .expect("ClientIdentity must exist before server selection");
+                .expect("NostrKeys must exist before server selection");
             config.server_addr = entry.0.addr;
             config.certificate_digest = entry.0.cert_digest.clone();
-            config.client_id = nostr_client::client_id_from_public_key(&identity.public);
+            config.client_id = nostr_client::client_id_from_public_key(&identity.public_key());
             info!(
-                pubkey = %identity.public,
+                pubkey = %identity.public_key(),
                 server = %entry.0.pubkey,
                 addr = %entry.0.addr,
                 "selected Nostr server"

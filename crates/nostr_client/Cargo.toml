@@ -11,6 +11,7 @@ test-fixtures = []
 bevy = { workspace = true, features = ["bevy_log"] }
 protocol = { workspace = true }
 async-channel = "2"
+base64 = "0.22"
 futures-lite = "2"
 nostr-sdk = { version = "0.44", features = ["nip49"] }
 serde = { workspace = true, features = ["derive"] }

@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy::tasks::IoTaskPool;
 use nostr_client::{
-    RelayPool, ServerAnnouncement, ServerIdentity, SERVER_ANNOUNCEMENT_REPUBLISH_SECS,
+    NostrKeys, RelayPool, ServerAnnouncement, SERVER_ANNOUNCEMENT_REPUBLISH_SECS,
     SERVER_ANNOUNCEMENT_VERSION,
 };
 use server_lightyear::ServerNetworkConfig;
@@ -24,7 +24,7 @@ impl Plugin for ServerAnnouncementPlugin {
 
 fn publish_announcement_on_ready(
     pool: Res<RelayPool>,
-    identity: Res<ServerIdentity>,
+    identity: Res<NostrKeys>,
     network: Res<ServerNetworkConfig>,
 ) {
     publish_announcement(&pool, &identity, &network);
@@ -34,7 +34,7 @@ fn publish_announcement_periodically(
     time: Res<Time>,
     mut last_publish: Local<Option<f64>>,
     pool: Res<RelayPool>,
-    identity: Res<ServerIdentity>,
+    identity: Res<NostrKeys>,
     network: Res<ServerNetworkConfig>,
 ) {
     let now = time.elapsed_secs_f64();
@@ -51,11 +51,7 @@ fn publish_announcement_periodically(
     publish_announcement(&pool, &identity, &network);
 }
 
-fn publish_announcement(
-    pool: &RelayPool,
-    identity: &ServerIdentity,
-    network: &ServerNetworkConfig,
-) {
+fn publish_announcement(pool: &RelayPool, identity: &NostrKeys, network: &ServerNetworkConfig) {
     let client = pool.client.clone();
     let identity = identity.clone();
     let announcement = ServerAnnouncement {

@@ -13,7 +13,7 @@ use diagnostics::ServerDiagnosticsPlugin;
 use gameplay::ServerGameplayPlugin;
 use map::ServerMapPlugin;
 use nostr_announcement::ServerAnnouncementPlugin;
-use nostr_client::{load_server_identity_from_env_or_profile, NostrClientPlugin};
+use nostr_client::{load_nostr_keys_from_env_or_profile, NostrClientPlugin};
 use protocol::diagnostics::SharedDiagnosticsPlugin;
 use protocol::*;
 use server_lightyear::{ServerNetworkConfig, ServerNetworkPlugin};
@@ -32,7 +32,7 @@ fn main() {
         ..Default::default()
     };
     let server_identity =
-        load_server_identity_from_env_or_profile(cli_options.nostr_identity_profile.as_deref())
+        load_nostr_keys_from_env_or_profile(cli_options.nostr_identity_profile.as_deref())
             .expect("SERVER_NSEC or profile identity.bin must contain a valid Nostr identity");
 
     App::new()

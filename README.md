@@ -157,7 +157,7 @@ Gameplay hotkeys are filtered through client-local input ownership so focused UI
 
 ## Nostr/Blossom Map Persistence
 
-Persistent maps still write to local filesystem stores first. When remote publishing is enabled, server-owned Overworld saves are tracked with per-map `remote_publish_journal.bin` entries, `local_head.bin`, and `accepted_head.bin`; failed remote publishes block later remote entries while preserving local files.
+Persistent maps still write to local filesystem stores first. When remote publishing is enabled, server-owned Overworld saves are tracked with per-map `remote_publish_journal.bin` entries, `local_head.bin`, and `accepted_head.bin`; failed remote publishes block later remote entries while preserving local files. Blossom uploads are authorized with BUD-11 `Authorization: Nostr ...` tokens signed by the configured Nostr keys.
 
 Enable server-owned Overworld remote publishing with:
 

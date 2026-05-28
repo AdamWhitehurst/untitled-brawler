@@ -13,7 +13,8 @@ pub use announcement::{
 };
 pub use auth::{build_identity_proof, verify_identity_proof, NOSTR_KIND_AUTH};
 pub use blobs::{
-    upload_blob, BlobFetchPolicy, BlobReadError, BlobRef, BlobWriteError, VerifiedBlob,
+    upload_blob, BlobFetchPolicy, BlobReadError, BlobRef, BlobWriteError, BlossomAuth,
+    BlossomAuthToken, VerifiedBlob, NOSTR_KIND_BLOSSOM_AUTH,
 };
 pub use events::{
     publish_event, NostrEventDraft, NostrEventKind, NostrEventQuery, NostrTag, VerifiedNostrEvent,
@@ -22,10 +23,9 @@ pub use identity::{
     client_id_from_public_key, client_identity_dir, decode_nsec_or_ncryptsec,
     generate_encrypted_identity, identity_file_path, identity_file_path_in_dir,
     import_encrypted_identity, load_encrypted_identity_from_dir,
-    load_server_identity_from_env_or_profile, load_server_identity_from_profile_dir,
-    npub_from_nostr_public_key, save_encrypted_identity_to_dir, unlock_identity, ClientIdentity,
-    EncryptedIdentity, IdentityStoreError, LoginError, SaveEncryptedIdentity, ServerIdentity,
-    StoredEncryptedIdentity,
+    load_nostr_keys_from_env_or_profile, load_nostr_keys_from_profile_dir,
+    npub_from_nostr_public_key, save_encrypted_identity_to_dir, unlock_identity, EncryptedIdentity,
+    IdentityStoreError, LoginError, NostrKeys, SaveEncryptedIdentity, StoredEncryptedIdentity,
 };
 pub use plugin::{NostrClientConfig, NostrClientPlugin};
 pub use relay_pool::{relay_pool_ready, RelayPool};

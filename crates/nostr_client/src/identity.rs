@@ -13,24 +13,31 @@ pub struct EncryptedIdentity {
     pub ciphertext: String,
 }
 
-#[derive(Resource, Clone)]
-pub struct ClientIdentity {
-    pub secret: SecretKey,
-    pub public: PublicKey,
-}
+#[derive(Resource, Component, Clone)]
+pub struct NostrKeys(Keys);
 
-#[derive(Resource, Clone)]
-pub struct ServerIdentity {
-    pub keys: Keys,
-}
-
-impl ClientIdentity {
+impl NostrKeys {
     pub fn from_secret(secret: SecretKey) -> Self {
-        let keys = Keys::new(secret.clone());
-        Self {
-            secret,
-            public: keys.public_key(),
-        }
+        Self(Keys::new(secret))
+    }
+
+    pub fn keys(&self) -> &Keys {
+        &self.0
+    }
+
+    pub fn public_key(&self) -> PublicKey {
+        self.0.public_key()
+    }
+
+    pub fn protocol_public_key(&self) -> NostrPublicKey {
+        NostrPublicKey(*self.public_key().as_bytes())
+    }
+
+    pub fn sign_event(
+        &self,
+        draft: &crate::events::NostrEventDraft,
+    ) -> Result<String, crate::events::NostrEventError> {
+        draft.sign_with_keys(&self.0)
     }
 }
 
@@ -59,7 +66,7 @@ pub struct SaveEncryptedIdentity(pub EncryptedIdentity);
 
 pub fn generate_encrypted_identity(
     passphrase: &str,
-) -> Result<(ClientIdentity, EncryptedIdentity), String> {
+) -> Result<(NostrKeys, EncryptedIdentity), String> {
     let secret = SecretKey::generate();
     encrypt_identity(secret, passphrase)
 }
@@ -67,7 +74,7 @@ pub fn generate_encrypted_identity(
 pub fn import_encrypted_identity(
     nsec: &str,
     passphrase: &str,
-) -> Result<(ClientIdentity, EncryptedIdentity), String> {
+) -> Result<(NostrKeys, EncryptedIdentity), String> {
     let secret = SecretKey::parse(nsec).map_err(|error| format!("invalid nsec: {error}"))?;
     encrypt_identity(secret, passphrase)
 }
@@ -75,7 +82,7 @@ pub fn import_encrypted_identity(
 pub fn unlock_identity(
     encrypted: &EncryptedIdentity,
     passphrase: &str,
-) -> Result<ClientIdentity, String> {
+) -> Result<NostrKeys, String> {
     if encrypted.version != ENCRYPTED_IDENTITY_VERSION {
         return Err(format!(
             "unsupported encrypted identity version {}",
@@ -88,7 +95,7 @@ pub fn unlock_identity(
     let secret = encrypted_key
         .decrypt(passphrase)
         .map_err(|error| format!("failed to decrypt identity: {error}"))?;
-    Ok(ClientIdentity::from_secret(secret))
+    Ok(NostrKeys::from_secret(secret))
 }
 
 pub fn decode_nsec_or_ncryptsec(
@@ -108,21 +115,19 @@ pub fn decode_nsec_or_ncryptsec(
     }
 }
 
-pub fn load_server_identity_from_env_or_profile(
-    profile: Option<&str>,
-) -> Result<ServerIdentity, String> {
+pub fn load_nostr_keys_from_env_or_profile(profile: Option<&str>) -> Result<NostrKeys, String> {
     let passphrase = std::env::var("NOSTR_IDENTITY_PASSPHRASE").ok();
     if let Ok(raw) = std::env::var("SERVER_NSEC") {
-        return server_identity_from_secret_text(&raw, passphrase.as_deref());
+        return nostr_keys_from_secret_text(&raw, passphrase.as_deref());
     }
     let profile_dir = client_identity_dir(profile)?;
-    load_server_identity_from_profile_dir(&profile_dir, passphrase.as_deref())
+    load_nostr_keys_from_profile_dir(&profile_dir, passphrase.as_deref())
 }
 
-pub fn load_server_identity_from_profile_dir(
+pub fn load_nostr_keys_from_profile_dir(
     profile_dir: &Path,
     passphrase: Option<&str>,
-) -> Result<ServerIdentity, String> {
+) -> Result<NostrKeys, String> {
     let encrypted = load_encrypted_identity_from_dir(profile_dir)
         .map_err(|error| format!("load profile identity: {error}"))?
         .ok_or_else(|| {
@@ -134,19 +139,12 @@ pub fn load_server_identity_from_profile_dir(
     let passphrase =
         passphrase.ok_or("NOSTR_IDENTITY_PASSPHRASE is required to unlock profile identity")?;
     let identity = unlock_identity(&encrypted, passphrase)?;
-    Ok(ServerIdentity {
-        keys: Keys::new(identity.secret),
-    })
+    Ok(identity)
 }
 
-fn server_identity_from_secret_text(
-    raw: &str,
-    passphrase: Option<&str>,
-) -> Result<ServerIdentity, String> {
+fn nostr_keys_from_secret_text(raw: &str, passphrase: Option<&str>) -> Result<NostrKeys, String> {
     let secret = decode_nsec_or_ncryptsec(raw, passphrase)?;
-    Ok(ServerIdentity {
-        keys: Keys::new(secret),
-    })
+    Ok(NostrKeys::from_secret(secret))
 }
 
 pub fn nostr_config_dir() -> PathBuf {
@@ -294,11 +292,11 @@ pub fn load_encrypted_identity_from_dir(
 fn encrypt_identity(
     secret: SecretKey,
     passphrase: &str,
-) -> Result<(ClientIdentity, EncryptedIdentity), String> {
+) -> Result<(NostrKeys, EncryptedIdentity), String> {
     let encrypted = secret
         .encrypt(passphrase)
         .map_err(|error| format!("failed to encrypt identity: {error}"))?;
-    let identity = ClientIdentity::from_secret(secret);
+    let identity = NostrKeys::from_secret(secret);
     Ok((
         identity,
         EncryptedIdentity {
@@ -319,7 +317,7 @@ mod tests {
         let (identity, encrypted) = generate_encrypted_identity("correct horse").unwrap();
         let unlocked = unlock_identity(&encrypted, "correct horse").unwrap();
 
-        assert_eq!(identity.public, unlocked.public);
+        assert_eq!(identity.public_key(), unlocked.public_key());
     }
 
     #[test]
@@ -436,9 +434,9 @@ mod tests {
         save_encrypted_identity_to_dir(dir.path(), &encrypted).unwrap();
 
         let server_identity =
-            load_server_identity_from_profile_dir(dir.path(), Some("profile passphrase")).unwrap();
+            load_nostr_keys_from_profile_dir(dir.path(), Some("profile passphrase")).unwrap();
 
-        assert_eq!(server_identity.keys.public_key(), client_identity.public);
+        assert_eq!(server_identity.public_key(), client_identity.public_key());
     }
 
     #[test]
@@ -448,7 +446,7 @@ mod tests {
             generate_encrypted_identity("profile passphrase").unwrap();
         save_encrypted_identity_to_dir(dir.path(), &encrypted).unwrap();
 
-        let error = match load_server_identity_from_profile_dir(dir.path(), None) {
+        let error = match load_nostr_keys_from_profile_dir(dir.path(), None) {
             Ok(_) => panic!("profile identity should require passphrase"),
             Err(error) => error,
         };
@@ -460,9 +458,9 @@ mod tests {
         let secret = SecretKey::generate();
         let nsec = secret.to_bech32().unwrap();
 
-        let identity = server_identity_from_secret_text(&nsec, None).unwrap();
+        let identity = nostr_keys_from_secret_text(&nsec, None).unwrap();
 
-        assert_eq!(identity.keys.public_key(), Keys::new(secret).public_key());
+        assert_eq!(identity.public_key(), Keys::new(secret).public_key());
     }
 
     #[test]
