@@ -620,6 +620,7 @@ pub fn prepare_pending_remote_publish_journal_entries(
         &mut PendingRemotePublishDeltas,
         &mut PendingRemotePublishEntryTasks,
     )>,
+    mut in_flight_logged: Local<HashSet<MapInstanceId>>,
 ) {
     if !config.enabled {
         trace!("remote publish preparation skipped because remote publishing is disabled");
@@ -648,12 +649,15 @@ pub fn prepare_pending_remote_publish_journal_entries(
             &mut tasks,
         );
         if !tasks.tasks.is_empty() {
-            trace!(
-                ?map_id,
-                "remote publish journal entry preparation already in flight"
-            );
+            if in_flight_logged.insert(map_id.clone()) {
+                trace!(
+                    ?map_id,
+                    "remote publish journal entry preparation already in flight"
+                );
+            }
             continue;
         }
+        in_flight_logged.remove(map_id);
         if remote_publish_blocked_by_failed_entry(&journal) {
             trace!(
                 ?map_id,
