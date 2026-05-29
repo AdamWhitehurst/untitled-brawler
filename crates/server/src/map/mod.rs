@@ -592,6 +592,7 @@ fn save_dirty_chunks_debounced(
         }
 
         let saved_chunks = enqueue_dirty_chunks(&mut instance, &mut pending_saves, None);
+        let content_dirty: HashSet<IVec3> = instance.content_dirty_chunks.drain().collect();
 
         let spawn_points: Vec<Vec3> = respawn_query
             .iter()
@@ -604,7 +605,10 @@ fn save_dirty_chunks_debounced(
             generation_version: config.generation_version,
             spawn_points,
         };
-        if matches!(map_id, MapInstanceId::Overworld) && remote_publish_config.enabled {
+        if matches!(map_id, MapInstanceId::Overworld)
+            && remote_publish_config.enabled
+            && !content_dirty.is_empty()
+        {
             let save_id = save_ids.allocate();
             let local_head = persistence::Store::load(
                 &local_head_store
@@ -629,6 +633,7 @@ fn save_dirty_chunks_debounced(
                     meta: nostr_map_persistence::PayloadSlotState::Present(meta.clone()),
                     chunks: saved_chunks
                         .iter()
+                        .filter(|(pos, _)| content_dirty.contains(pos))
                         .cloned()
                         .map(|(pos, envelope)| {
                             (

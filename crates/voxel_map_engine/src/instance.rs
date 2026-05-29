@@ -26,8 +26,10 @@ pub struct VoxelMapInstance {
     pub tree: OctreeI32<Option<ChunkData>>,
     /// Effective level per loaded column (level ≤ LOAD_LEVEL_THRESHOLD only).
     pub chunk_levels: HashMap<IVec2, u32>,
-    /// Chunks with unsaved voxel modifications.
+    /// Chunks with unsaved voxel modifications (generated or edited); drives local saves.
     pub dirty_chunks: HashSet<IVec3>,
+    /// Chunks changed by genuine content edits (not procedural generation); drives remote publish.
+    pub content_dirty_chunks: HashSet<IVec3>,
     /// Chunks that need async remeshing after in-place mutation.
     pub chunks_needing_remesh: HashSet<IVec3>,
     pub debug_colors: bool,
@@ -45,6 +47,7 @@ impl VoxelMapInstance {
             tree: OctreeI32::new(tree_height as u8),
             chunk_levels: HashMap::new(),
             dirty_chunks: HashSet::new(),
+            content_dirty_chunks: HashSet::new(),
             chunks_needing_remesh: HashSet::new(),
             debug_colors: false,
             chunk_size,
@@ -131,6 +134,7 @@ impl VoxelMapInstance {
         chunk_data.voxels.set(index, voxel);
 
         self.dirty_chunks.insert(chunk_pos);
+        self.content_dirty_chunks.insert(chunk_pos);
         self.chunks_needing_remesh.insert(chunk_pos);
 
         self.update_neighbor_padding(chunk_pos, local, voxel);
@@ -298,6 +302,25 @@ mod tests {
         assert_eq!(data.voxels.get(index), WorldVoxel::Solid(42));
         assert!(instance.dirty_chunks.contains(&chunk_pos));
         assert!(instance.chunks_needing_remesh.contains(&chunk_pos));
+    }
+
+    #[test]
+    fn content_dirty_tracks_edits_not_generated_inserts() {
+        let mut instance = VoxelMapInstance::new(5, 16);
+        let chunk_pos = IVec3::ZERO;
+        let voxels = vec![WorldVoxel::Air; PADDED_VOLUME_16];
+
+        // Generated/disk-loaded chunk insertion must not mark content dirty.
+        instance.insert_chunk_data(
+            chunk_pos,
+            ChunkData::from_voxels(&voxels, ChunkStatus::Full),
+        );
+        assert!(instance.content_dirty_chunks.is_empty());
+
+        // A genuine voxel edit marks the chunk content dirty (and locally dirty).
+        instance.set_voxel(IVec3::new(5, 5, 5), WorldVoxel::Solid(42));
+        assert!(instance.content_dirty_chunks.contains(&chunk_pos));
+        assert!(instance.dirty_chunks.contains(&chunk_pos));
     }
 
     #[test]
