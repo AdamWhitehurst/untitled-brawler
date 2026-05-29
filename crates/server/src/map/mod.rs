@@ -1468,6 +1468,8 @@ pub fn handle_world_object_move_requests(
         &StoreBackend<IVec3, Vec<WorldObjectSpawn>, FsChunkEntitiesStore>,
         &mut PendingStoreOps<IVec3, Vec<WorldObjectSpawn>>,
     )>,
+    mut dirty_state: ResMut<WorldDirtyState>,
+    time: Res<Time>,
     mut commands: Commands,
 ) {
     for (client_entity, mut receiver) in &mut receivers {
@@ -1510,6 +1512,7 @@ pub fn handle_world_object_move_requests(
                         },
                         &mut ack_senders,
                     );
+                    dirty_state.mark_entities_dirty(&map_id, time.elapsed_secs_f64());
                 }
                 Err(reason) => {
                     send_world_object_edit_reject(
