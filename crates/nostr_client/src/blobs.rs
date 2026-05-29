@@ -211,7 +211,7 @@ pub async fn upload_blob(
             .put(url.clone())
             .header("Authorization", token.authorization_header)
             .header("X-SHA-256", sha256_hex.clone())
-            .header("Content-Type", "application/octet-stream")
+            .header("Content-Type", "image/png")
             .body(bytes)
             .send(),
     )

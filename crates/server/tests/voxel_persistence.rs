@@ -343,6 +343,37 @@ fn remote_publish_prepare_failure_blocks_later_attempts() {
 }
 
 #[test]
+fn remote_publish_next_revision_uses_persisted_and_pending_state() {
+    let local_head = server::persistence::LocalMapHead {
+        local_revision_number: 5,
+        active_content_hash: [5; 32],
+        accepted_remote_manifest_hash: None,
+    };
+    let journal = server::persistence::RemotePublishJournal {
+        entries: vec![remote_publish_entry(
+            7,
+            7,
+            server::persistence::RemotePublishStatus::Published,
+        )],
+    };
+    let mut deltas = server::map::remote_publish::PendingRemotePublishDeltas::default();
+    deltas.queue.push_back(remote_publish_draft(8));
+    let pending_publish = server::map::remote_publish::PendingPublishBySaveId(
+        [(persistence::SaveOpId(42), remote_publish_draft(9))].into(),
+    );
+
+    assert_eq!(
+        server::map::remote_publish::next_publish_revision_number(
+            Some(&local_head),
+            &journal,
+            &deltas,
+            &pending_publish,
+        ),
+        10,
+    );
+}
+
+#[test]
 fn remote_publish_retry_keeps_deterministic_manifest_hash() {
     let dir = tempfile::tempdir().unwrap();
     let map_dir = Arc::new(dir.path().join("overworld"));

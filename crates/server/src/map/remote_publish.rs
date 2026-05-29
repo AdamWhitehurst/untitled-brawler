@@ -86,6 +86,41 @@ impl PendingRemotePublishDeltas {
     }
 }
 
+/// Computes the next durable local revision number for an Overworld publish draft.
+pub fn next_publish_revision_number(
+    local_head: Option<&LocalMapHead>,
+    journal: &RemotePublishJournal,
+    pending_deltas: &PendingRemotePublishDeltas,
+    pending_publish: &PendingPublishBySaveId,
+) -> u64 {
+    let local_head_revision = local_head
+        .map(|head| head.local_revision_number)
+        .unwrap_or(0);
+    let journal_revision = journal
+        .entries
+        .iter()
+        .map(|entry| entry.advances_local_head.local_revision_number)
+        .max()
+        .unwrap_or(0);
+    let queued_revision = pending_deltas
+        .queue
+        .iter()
+        .map(|draft| draft.local_revision_number)
+        .chain(
+            pending_publish
+                .0
+                .values()
+                .map(|draft| draft.local_revision_number),
+        )
+        .max()
+        .unwrap_or(0);
+
+    local_head_revision
+        .max(journal_revision)
+        .max(queued_revision)
+        + 1
+}
+
 /// In-memory correlation between filesystem save ids and publish drafts.
 #[derive(Resource, Default)]
 pub struct PendingPublishBySaveId(pub HashMap<SaveOpId, ServerMapPublishDraft>);
@@ -323,6 +358,15 @@ pub async fn upload_publish_slot<T>(
                 .save(&blob, &bytes)
                 .await
                 .map_err(|error| MapPersistenceRejection::Unavailable(error.to_string()))?;
+            trace!(
+                ?class,
+                ?key,
+                schema_version,
+                sha256 = %hex::encode(sha256),
+                size = bytes.len(),
+                url = %get_url,
+                "uploaded Blossom map payload"
+            );
             ManifestPayloadSlot::Present { blob }
         }
         PayloadSlotState::Empty => ManifestPayloadSlot::Empty,
@@ -471,6 +515,14 @@ pub fn apply_publish_results(
             journal.entries[entry_index].status = RemotePublishStatus::InFlight;
             return Err(error);
         }
+        trace!(
+            ?map_id,
+            ?manifest_hash,
+            local_revision_number = journal.entries[entry_index]
+                .advances_local_head
+                .local_revision_number,
+            "remote manifest publish succeeded; advanced map heads"
+        );
         publish_ops.completed_saves.remove(0);
         worker.in_flight_by_map.remove(map_id);
     }
@@ -495,6 +547,12 @@ pub fn apply_publish_results(
             return Err(save_error);
         }
         let (_, error) = publish_ops.save_errors.remove(0);
+        trace!(
+            ?map_id,
+            ?manifest_hash,
+            %error,
+            "remote manifest publish failed"
+        );
         error!(
             ?map_id,
             ?manifest_hash,
@@ -613,7 +671,6 @@ pub fn prepare_pending_remote_publish_journal_entries(
             continue;
         }
         let Some(draft) = deltas.pop_front_for_prepare() else {
-            trace!(?map_id, "no unpublished remote publish draft to prepare");
             continue;
         };
         let previous_remote_manifest_hash = journal
@@ -699,7 +756,7 @@ fn poll_prepare_tasks(
 }
 
 fn discard_already_journaled_deltas(
-    map_id: &MapInstanceId,
+    _map_id: &MapInstanceId,
     journal: &RemotePublishJournal,
     deltas: &mut PendingRemotePublishDeltas,
 ) {
@@ -716,11 +773,6 @@ fn discard_already_journaled_deltas(
         if deltas.blocked_revision == Some(draft.local_revision_number) {
             deltas.blocked_revision = None;
         }
-        trace!(
-            ?map_id,
-            local_revision_number = draft.local_revision_number,
-            "discarding already journaled remote publish draft"
-        );
     }
 }
 
@@ -785,7 +837,6 @@ pub fn poll_remote_publish_journal(
             .iter_mut()
             .find(|entry| entry.status == RemotePublishStatus::Pending)
         else {
-            trace!(?map_id, "no pending remote publish journal entry");
             continue;
         };
         entry.status = RemotePublishStatus::InFlight;
@@ -794,6 +845,12 @@ pub fn poll_remote_publish_journal(
             .signed_event_json
             .clone()
             .expect("pending publish journal entry must contain signed event JSON");
+        trace!(
+            ?map_id,
+            ?entry.new_manifest_hash,
+            local_revision_number = entry.advances_local_head.local_revision_number,
+            "starting remote manifest publish"
+        );
         publish_ops.spawn_save(&publish_store.0, entry.new_manifest_hash, event_json);
         journal_store
             .0
@@ -811,7 +868,6 @@ pub fn normalize_chunk_save_completions(
 ) {
     for event in completed.read() {
         let Some(save_id) = event.save_id else {
-            trace!(?event.position, "terrain chunk save completion has no publish save id");
             continue;
         };
         completed_writer.write(MapPayloadSaveCompleted {
@@ -822,7 +878,6 @@ pub fn normalize_chunk_save_completions(
     }
     for event in failed.read() {
         let Some(save_id) = event.save_id else {
-            trace!(?event.position, "terrain chunk save failure has no publish save id");
             continue;
         };
         failed_writer.write(MapPayloadSaveFailed {

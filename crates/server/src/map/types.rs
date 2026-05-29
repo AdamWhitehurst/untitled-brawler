@@ -99,9 +99,7 @@ pub struct ActiveMapPreflight {
 pub enum MapPreflightStage {
     LoadFilesystemMeta,
     WaitingFilesystemMeta,
-    DecideFilesystemOnly,
-    MaterializeRemote,
-    PrepareMap,
+    WaitingRemoteDecision,
     CommitTransition,
 }
 

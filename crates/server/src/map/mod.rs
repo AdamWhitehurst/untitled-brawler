@@ -9,7 +9,7 @@ pub use preparation::*;
 pub use switching::*;
 pub use types::*;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,8 +39,8 @@ use crate::persistence::fs_map_entities::FsMapEntitiesStore;
 use crate::persistence::fs_map_meta::FsMapMetaStore;
 use crate::persistence::{
     map_save_dir, store_map_dir_for_loading, FsAcceptedMapHeadStore, FsLocalMapHeadStore,
-    FsLocalUnpublishedPublishDraftStore, FsRemotePublishJournalStore, MapMeta,
-    RemoteMapPersistenceConfig, ServerMapPublishDraft, WorldSavePath,
+    FsLocalUnpublishedPublishDraftStore, FsRemotePublishJournalStore, LocalMapHead, MapMeta,
+    RemoteMapPersistenceConfig, RemotePublishJournal, ServerMapPublishDraft, WorldSavePath,
 };
 use persistence::{PendingStoreOps, SaveOpIdAllocator, StoreBackend};
 use protocol::map::{ChunkEntityRef, MapSaveTarget, SavedEntity, SavedEntityKind};
@@ -130,6 +130,79 @@ pub struct PendingVoxelEdit {
 #[derive(Resource, Default)]
 pub struct PendingVoxelBroadcasts {
     pub per_chunk: HashMap<(MapInstanceId, IVec3), Vec<PendingVoxelEdit>>,
+}
+
+fn configure_remote_map_read_context(
+    mut commands: Commands,
+    remote_config: Res<RemoteMapPersistenceConfig>,
+    remote_publish_config: Res<remote_publish::RemoteMapPublishConfig>,
+    relay_pool: Option<Res<nostr_client::RelayPool>>,
+    nostr_config: Res<nostr_client::NostrClientConfig>,
+) {
+    if !remote_config.enabled {
+        trace!("remote map restore disabled");
+        return;
+    }
+
+    let relay_pool = relay_pool.expect("SERVER_MAP_REMOTE_READ=1 requires RelayPool resource");
+    let allowed_blossom_hosts = remote_read_allowed_blossom_hosts(&remote_publish_config);
+    let mut persistence_policy = nostr_map_persistence::MapPersistencePolicy::default();
+    persistence_policy.allowed_blossom_hosts = allowed_blossom_hosts.clone();
+    let mut query_policy = nostr_map_persistence::NostrMapQueryPolicy::default();
+    query_policy.relays = nostr_config.relays.clone();
+    query_policy.timeout = remote_config.fallback_timeout;
+
+    commands.insert_resource(crate::persistence::RemoteMapReadContext {
+        event_client: relay_pool.event_client(),
+        query_policy,
+        persistence_policy,
+    });
+    info!(
+        ?allowed_blossom_hosts,
+        "real Nostr/Blossom remote map restore enabled"
+    );
+}
+
+fn remote_read_allowed_blossom_hosts(
+    remote_publish_config: &remote_publish::RemoteMapPublishConfig,
+) -> BTreeSet<String> {
+    let mut hosts = parse_blossom_allowed_hosts(
+        std::env::var("SERVER_BLOSSOM_ALLOWED_HOSTS")
+            .ok()
+            .as_deref(),
+    );
+    if let Some(host) = remote_publish_config
+        .blossom_public_base_url
+        .as_ref()
+        .and_then(|url| url.host_str())
+    {
+        hosts.insert(host.to_ascii_lowercase());
+    } else if let Ok(public_base_url) = std::env::var("SERVER_BLOSSOM_PUBLIC_BASE_URL") {
+        let url = url::Url::parse(&public_base_url)
+            .expect("SERVER_BLOSSOM_PUBLIC_BASE_URL must be a valid URL");
+        let host = url
+            .host_str()
+            .expect("SERVER_BLOSSOM_PUBLIC_BASE_URL must include a host");
+        hosts.insert(host.to_ascii_lowercase());
+    }
+    if hosts.is_empty() {
+        panic!(
+            "remote map restore requires SERVER_BLOSSOM_PUBLIC_BASE_URL or SERVER_BLOSSOM_ALLOWED_HOSTS"
+        );
+    }
+    hosts
+}
+
+fn parse_blossom_allowed_hosts(raw: Option<&str>) -> BTreeSet<String> {
+    raw.map(|value| {
+        value
+            .split(',')
+            .map(str::trim)
+            .filter(|host| !host.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// Spawn the overworld map entity with store components and begin async meta load.
@@ -466,6 +539,9 @@ fn save_dirty_chunks_debounced(
         &mut PendingStoreOps<(), MapMeta>,
         &StoreBackend<(), Vec<SavedEntity>, FsMapEntitiesStore>,
         &mut PendingStoreOps<(), Vec<SavedEntity>>,
+        Option<&StoreBackend<(), LocalMapHead, FsLocalMapHeadStore>>,
+        Option<&RemotePublishJournal>,
+        Option<&remote_publish::PendingRemotePublishDeltas>,
     )>,
     entity_query: Query<(
         &MapSaveTarget,
@@ -505,6 +581,9 @@ fn save_dirty_chunks_debounced(
         mut meta_ops,
         entity_store,
         mut entity_ops,
+        local_head_store,
+        publish_journal,
+        pending_deltas,
     ) in &mut map_query
     {
         if config.save_dir.is_none() {
@@ -527,11 +606,26 @@ fn save_dirty_chunks_debounced(
         };
         if matches!(map_id, MapInstanceId::Overworld) && remote_publish_config.enabled {
             let save_id = save_ids.allocate();
+            let local_head = persistence::Store::load(
+                &local_head_store
+                    .expect("remote publishable Overworld map must have a local head store")
+                    .0,
+                &(),
+            )
+            .expect("local map head should load while allocating a remote publish revision");
+            let local_revision_number = remote_publish::next_publish_revision_number(
+                local_head.as_ref(),
+                publish_journal
+                    .expect("remote publishable Overworld map must have a publish journal"),
+                pending_deltas
+                    .expect("remote publishable Overworld map must have pending publish deltas"),
+                &pending_publish,
+            );
             let map_entities = by_map.get(map_id).cloned().unwrap_or_default();
             pending_publish.0.insert(
                 save_id,
                 ServerMapPublishDraft {
-                    local_revision_number: save_id.0,
+                    local_revision_number,
                     meta: nostr_map_persistence::PayloadSlotState::Present(meta.clone()),
                     chunks: saved_chunks
                         .iter()
@@ -849,7 +943,10 @@ impl Plugin for ServerMapPlugin {
             .init_resource::<remote_publish::RemoteMapPublishWorker>()
             .add_message::<remote_publish::MapPayloadSaveCompleted>()
             .add_message::<remote_publish::MapPayloadSaveFailed>()
-            .add_systems(OnEnter(AppState::Ready), init_overworld_entity)
+            .add_systems(
+                OnEnter(AppState::Ready),
+                (configure_remote_map_read_context, init_overworld_entity).chain(),
+            )
             .add_systems(
                 Update,
                 (
@@ -2370,6 +2467,14 @@ mod tests {
         assert_eq!(
             voxel_for_brush_mode(WorldVoxel::Unset, TerrainBrushMode::ReplaceAll, 5),
             Some(VoxelType::Solid(5))
+        );
+    }
+
+    #[test]
+    fn remote_read_allowed_hosts_parse_comma_list() {
+        assert_eq!(
+            parse_blossom_allowed_hosts(Some("Blossom.Example, cdn.example ")),
+            BTreeSet::from(["blossom.example".to_string(), "cdn.example".to_string()])
         );
     }
 

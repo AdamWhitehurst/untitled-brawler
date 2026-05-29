@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::tasks::{futures::check_ready, IoTaskPool, Task};
 use lightyear::prelude::MessageSender;
 use nostr_map_persistence::{
     download_payloads, fetch_manifest_ancestors, latest_visible_manifest, validate_remote_map_save,
@@ -13,7 +14,7 @@ use crate::persistence::fs_map_meta::FsMapMetaStore;
 use crate::persistence::{
     install_active_revision_store_backends, map_save_dir, materialize_validated_map_save,
     store_map_dir_for_loading, FakeRemoteMapRestores, MapMeta, RemoteMapPersistenceConfig,
-    RemoteMapReadContext, WorldSavePath,
+    RemoteMapReadContext, ServerValidatedMapSave, WorldSavePath,
 };
 
 use super::{
@@ -34,7 +35,6 @@ pub fn spawn_map_preflight_tasks(
         return;
     }
     let Some(request) = queue.0.pop_front() else {
-        trace!("no pending map persistence preflight requests");
         return;
     };
     commands.spawn((
@@ -53,6 +53,7 @@ pub fn poll_map_persistence_preflight(
         Entity,
         &mut ActiveMapPreflight,
         &mut PendingStoreOps<(), MapMeta>,
+        Option<&mut RemotePreflightTask>,
     )>,
     meta_stores: Query<&StoreBackend<(), MapMeta, FsMapMetaStore>>,
     mut map_states: Query<&mut MapLoadState>,
@@ -70,7 +71,7 @@ pub fn poll_map_persistence_preflight(
         return;
     };
 
-    for (entity, mut preflight, mut meta_ops) in &mut active {
+    for (entity, mut preflight, mut meta_ops, remote_task) in &mut active {
         meta_ops.poll();
         if let Some((_, error)) = meta_ops.load_errors.pop() {
             let rejection = MapPersistenceRejection::Filesystem(error.to_string());
@@ -111,44 +112,56 @@ pub fn poll_map_persistence_preflight(
                     .completed_loads
                     .pop()
                     .expect("checked completed filesystem metadata load exists");
-                let decision = if remote_config.enabled {
-                    remote_preflight_decision(
-                        &preflight.request.target_map_id,
-                        map_remote_owner(&preflight.request.target_map_id, &server_identity),
-                        loaded_meta.clone(),
-                        fake_remote_restores.as_deref(),
-                        remote_read_context.as_deref(),
-                    )
-                } else {
-                    loaded_meta
-                        .map(MapPersistencePreflightDecision::UseFilesystem)
-                        .unwrap_or(MapPersistencePreflightDecision::Missing)
+                let owner = map_remote_owner(&preflight.request.target_map_id, &server_identity);
+                match begin_remote_or_filesystem_decision(
+                    &mut commands,
+                    entity,
+                    &preflight.request.target_map_id,
+                    owner,
+                    loaded_meta,
+                    &remote_config,
+                    fake_remote_restores.as_deref(),
+                    remote_read_context.as_deref(),
+                ) {
+                    Some(decision) => finish_preflight_decision(
+                        &mut commands,
+                        &registry,
+                        &mut map_states,
+                        &save_path,
+                        &terrain_registry,
+                        &type_registry,
+                        entity,
+                        &mut preflight,
+                        decision,
+                    ),
+                    None => preflight.stage = MapPreflightStage::WaitingRemoteDecision,
+                }
+            }
+            MapPreflightStage::WaitingRemoteDecision => {
+                let Some(mut remote_task) = remote_task else {
+                    trace!(?preflight.request.target_map_id, "remote preflight task component not yet applied; waiting");
+                    continue;
                 };
-                apply_preflight_result(
+                let Some(result) = check_ready(&mut remote_task.task) else {
+                    trace!(?preflight.request.target_map_id, "waiting for remote map persistence preflight");
+                    continue;
+                };
+                let decision = remote_decision_from_result(result, remote_task.loaded_meta.take());
+                commands.entity(entity).remove::<RemotePreflightTask>();
+                finish_preflight_decision(
                     &mut commands,
                     &registry,
                     &mut map_states,
                     &save_path,
                     &terrain_registry,
                     &type_registry,
-                    &preflight.request,
+                    entity,
+                    &mut preflight,
                     decision,
                 );
-                match preflight.request.kind {
-                    MapPreflightKind::StartupOverworld => commands.entity(entity).despawn(),
-                    MapPreflightKind::MapSwitch { .. } => {
-                        preflight.stage = MapPreflightStage::CommitTransition;
-                    }
-                }
             }
             MapPreflightStage::CommitTransition => {
                 trace!(?preflight.request.target_map_id, "map preflight ready for transition commit");
-            }
-            MapPreflightStage::DecideFilesystemOnly
-            | MapPreflightStage::MaterializeRemote
-            | MapPreflightStage::PrepareMap => {
-                trace!(?preflight.stage, "preflight stage is reserved for later phases");
-                continue;
             }
         }
     }
@@ -164,16 +177,39 @@ fn map_remote_owner(
     }
 }
 
-fn remote_preflight_decision(
+/// Async remote restore preflight handle plus the filesystem meta to fall back to.
+#[derive(Component)]
+pub struct RemotePreflightTask {
+    loaded_meta: Option<MapMeta>,
+    task: Task<Result<Option<ServerValidatedMapSave>, MapPersistenceRejection>>,
+}
+
+/// Resolves the filesystem-only decision synchronously or spawns the async remote read.
+///
+/// Returns `Some(decision)` when no remote read is needed; returns `None` after inserting a
+/// [`RemotePreflightTask`] whose result must be polled in [`MapPreflightStage::WaitingRemoteDecision`].
+#[allow(clippy::too_many_arguments)]
+fn begin_remote_or_filesystem_decision(
+    commands: &mut Commands,
+    entity: Entity,
     target_map_id: &MapInstanceId,
     owner: protocol::NostrPublicKey,
     loaded_meta: Option<MapMeta>,
+    remote_config: &RemoteMapPersistenceConfig,
     fake_remote_restores: Option<&FakeRemoteMapRestores>,
     remote_read_context: Option<&RemoteMapReadContext>,
-) -> MapPersistencePreflightDecision {
+) -> Option<MapPersistencePreflightDecision> {
+    if !remote_config.enabled {
+        return Some(
+            loaded_meta
+                .map(MapPersistencePreflightDecision::UseFilesystem)
+                .unwrap_or(MapPersistencePreflightDecision::Missing),
+        );
+    }
+
     if let Some(save) = fake_remote_restores.and_then(|remote| remote.0.get(target_map_id).cloned())
     {
-        return MapPersistencePreflightDecision::UseRemote(save);
+        return Some(MapPersistencePreflightDecision::UseRemote(save));
     }
 
     let Some(remote_read_context) = remote_read_context else {
@@ -181,9 +217,11 @@ fn remote_preflight_decision(
             ?target_map_id,
             "remote persistence enabled but no fake or real remote read context is configured; falling back"
         );
-        return loaded_meta
-            .map(MapPersistencePreflightDecision::UseFilesystem)
-            .unwrap_or(MapPersistencePreflightDecision::RemoteUnavailable);
+        return Some(
+            loaded_meta
+                .map(MapPersistencePreflightDecision::UseFilesystem)
+                .unwrap_or(MapPersistencePreflightDecision::RemoteUnavailable),
+        );
     };
 
     if matches!(target_map_id, MapInstanceId::Homebase { .. }) {
@@ -193,40 +231,52 @@ fn remote_preflight_decision(
         );
     }
 
-    let result = bevy::tasks::block_on(async {
-        let Some(head) = latest_visible_manifest(
-            &remote_read_context.event_client,
-            owner,
-            target_map_id,
-            remote_read_context.query_policy.clone(),
-        )
-        .await?
+    let task = spawn_remote_preflight_task(remote_read_context, owner, target_map_id.clone());
+    commands
+        .entity(entity)
+        .insert(RemotePreflightTask { loaded_meta, task });
+    None
+}
+
+/// Spawns the Nostr manifest lookup, Blossom download, validation, and save assembly on the IO pool.
+fn spawn_remote_preflight_task(
+    remote_read_context: &RemoteMapReadContext,
+    owner: protocol::NostrPublicKey,
+    target_map_id: MapInstanceId,
+) -> Task<Result<Option<ServerValidatedMapSave>, MapPersistenceRejection>> {
+    let event_client = remote_read_context.event_client.clone();
+    let query_policy = remote_read_context.query_policy.clone();
+    let persistence_policy = remote_read_context.persistence_policy.clone();
+    IoTaskPool::get().spawn(async move {
+        let Some(head) =
+            latest_visible_manifest(&event_client, owner, &target_map_id, query_policy.clone())
+                .await?
         else {
             return Ok(None);
         };
-        let chain = fetch_manifest_ancestors(
-            &remote_read_context.event_client,
-            &head,
-            None,
-            remote_read_context.query_policy.clone(),
-        )
-        .await?;
+        let chain =
+            fetch_manifest_ancestors(&event_client, &head, None, query_policy.clone()).await?;
         match verify_revision_chain(&chain, None)? {
             RevisionDecision::AtAcceptedHead => return Ok(None),
             RevisionDecision::Descendant(_) => {}
         }
-        let payloads =
-            download_payloads(&chain, remote_read_context.persistence_policy.clone()).await?;
+        let payloads = download_payloads(&chain, persistence_policy.clone()).await?;
         let raw_save = validate_remote_map_save(
             chain,
             payloads,
-            remote_read_context.persistence_policy.clone(),
+            persistence_policy.clone(),
             RawSaveBase::Empty,
         )?;
         let save = raw_save.try_into()?;
         Ok::<_, MapPersistenceRejection>(Some(save))
-    });
+    })
+}
 
+/// Maps a finished remote preflight task result to a backend decision, falling back to filesystem meta.
+fn remote_decision_from_result(
+    result: Result<Option<ServerValidatedMapSave>, MapPersistenceRejection>,
+    loaded_meta: Option<MapMeta>,
+) -> MapPersistencePreflightDecision {
     match result {
         Ok(Some(save)) => MapPersistencePreflightDecision::UseRemote(save),
         Ok(None) => loaded_meta
@@ -235,12 +285,38 @@ fn remote_preflight_decision(
         Err(MapPersistenceRejection::Unavailable(_)) => loaded_meta
             .map(MapPersistencePreflightDecision::UseFilesystem)
             .unwrap_or(MapPersistencePreflightDecision::RemoteUnavailable),
-        Err(rejection @ MapPersistenceRejection::Invalid(_))
-        | Err(rejection @ MapPersistenceRejection::Incomplete(_))
-        | Err(rejection @ MapPersistenceRejection::Divergent(_)) => {
-            MapPersistencePreflightDecision::Blocked(rejection)
-        }
         Err(rejection) => MapPersistencePreflightDecision::Blocked(rejection),
+    }
+}
+
+/// Applies a preflight decision, then despawns startup preflights or advances switches to commit.
+#[allow(clippy::too_many_arguments)]
+fn finish_preflight_decision(
+    commands: &mut Commands,
+    registry: &MapRegistry,
+    map_states: &mut Query<&mut MapLoadState>,
+    save_path: &WorldSavePath,
+    terrain_registry: &TerrainDefRegistry,
+    type_registry: &AppTypeRegistry,
+    entity: Entity,
+    preflight: &mut ActiveMapPreflight,
+    decision: MapPersistencePreflightDecision,
+) {
+    apply_preflight_result(
+        commands,
+        registry,
+        map_states,
+        save_path,
+        terrain_registry,
+        type_registry,
+        &preflight.request,
+        decision,
+    );
+    match preflight.request.kind {
+        MapPreflightKind::StartupOverworld => commands.entity(entity).despawn(),
+        MapPreflightKind::MapSwitch { .. } => {
+            preflight.stage = MapPreflightStage::CommitTransition;
+        }
     }
 }
 

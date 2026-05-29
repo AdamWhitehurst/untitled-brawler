@@ -71,7 +71,7 @@ fn publish_announcement(pool: &RelayPool, identity: &NostrKeys, network: &Server
             .await
             {
                 Ok(event_id) => trace!(%event_id, "published Nostr server announcement"),
-                Err(error) => panic!("failed to publish Nostr server announcement: {error}"),
+                Err(error) => warn!(%error, "failed to publish Nostr server announcement"),
             }
         })
         .detach();

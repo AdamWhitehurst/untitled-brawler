@@ -248,10 +248,22 @@ pub struct RemoteMapPersistenceConfig {
 impl Default for RemoteMapPersistenceConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: env_flag("SERVER_MAP_REMOTE_READ") || env_flag("SERVER_MAP_REMOTE_PUBLISH"),
             fallback_timeout: Duration::from_secs(5),
         }
     }
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.as_str(),
+                "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+            )
+        })
+        .unwrap_or(false)
 }
 
 /// Test/local-harness remote restore source using production-shaped validated saves.
