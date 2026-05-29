@@ -403,7 +403,7 @@ pub fn process_pending_initial_spawns(
     pending_clients: Query<(Entity, &PendingInitialSpawn)>,
     character_query: Query<Entity, (With<CharacterMarker>, Without<DummyTarget>)>,
     mut registry: ResMut<MapRegistry>,
-    map_state_query: Query<&MapLoadState>,
+    map_state_query: Query<Ref<MapLoadState>>,
     map_params_query: Query<(
         &voxel_map_engine::prelude::VoxelMapConfig,
         &voxel_map_engine::prelude::MapDimensions,

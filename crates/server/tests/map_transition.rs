@@ -30,7 +30,7 @@ fn map_transition_registered_map_checking_persistence_is_not_usable() {
         .run_system_once(
             |mut commands: Commands,
              mut registry: ResMut<MapRegistry>,
-             states: Query<&MapLoadState>,
+             states: Query<Ref<MapLoadState>>,
              params: Query<(&VoxelMapConfig, &MapDimensions)>,
              save_path: Res<WorldSavePath>| {
                 let preparation = ensure_map_exists(
@@ -70,7 +70,7 @@ fn map_transition_blocked_map_preparation_preserves_rejection() {
         .run_system_once(
             |mut commands: Commands,
              mut registry: ResMut<MapRegistry>,
-             states: Query<&MapLoadState>,
+             states: Query<Ref<MapLoadState>>,
              params: Query<(&VoxelMapConfig, &MapDimensions)>,
              save_path: Res<WorldSavePath>| {
                 let preparation = ensure_map_exists(

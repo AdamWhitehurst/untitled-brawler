@@ -29,11 +29,16 @@ pub fn spawn_map_preflight_tasks(
     mut commands: Commands,
     mut queue: ResMut<PendingMapPreflights>,
     active: Query<&ActiveMapPreflight>,
+    mut already_waiting: Local<bool>,
 ) {
     if !active.is_empty() {
-        trace!("map preflight already active; waiting before spawning another");
+        if !*already_waiting {
+            trace!("map preflight already active; waiting before spawning another");
+            *already_waiting = true;
+        }
         return;
     }
+    *already_waiting = false;
     let Some(request) = queue.0.pop_front() else {
         return;
     };
@@ -104,7 +109,9 @@ pub fn poll_map_persistence_preflight(
                 preflight.stage = MapPreflightStage::WaitingFilesystemMeta;
             }
             MapPreflightStage::WaitingFilesystemMeta if meta_ops.completed_loads.is_empty() => {
-                trace!(?preflight.request.target_map_id, "waiting for filesystem metadata preflight load");
+                if preflight.is_changed() {
+                    trace!(?preflight.request.target_map_id, "waiting for filesystem metadata preflight load");
+                }
                 continue;
             }
             MapPreflightStage::WaitingFilesystemMeta => {
@@ -139,11 +146,15 @@ pub fn poll_map_persistence_preflight(
             }
             MapPreflightStage::WaitingRemoteDecision => {
                 let Some(mut remote_task) = remote_task else {
-                    trace!(?preflight.request.target_map_id, "remote preflight task component not yet applied; waiting");
+                    if preflight.is_changed() {
+                        trace!(?preflight.request.target_map_id, "remote preflight task component not yet applied; waiting");
+                    }
                     continue;
                 };
                 let Some(result) = check_ready(&mut remote_task.task) else {
-                    trace!(?preflight.request.target_map_id, "waiting for remote map persistence preflight");
+                    if preflight.is_changed() {
+                        trace!(?preflight.request.target_map_id, "waiting for remote map persistence preflight");
+                    }
                     continue;
                 };
                 let decision = remote_decision_from_result(result, remote_task.loaded_meta.take());
@@ -324,18 +335,20 @@ fn finish_preflight_decision(
 #[allow(clippy::too_many_arguments)]
 pub fn commit_ready_map_preflights(
     mut commands: Commands,
-    mut active: Query<(Entity, &ActiveMapPreflight)>,
+    active: Query<(Entity, Ref<ActiveMapPreflight>)>,
     mut registry: ResMut<MapRegistry>,
-    map_state_query: Query<&MapLoadState>,
+    map_state_query: Query<Ref<MapLoadState>>,
     map_params_query: Query<(&VoxelMapConfig, &MapDimensions)>,
     save_path: Res<WorldSavePath>,
     mut room_registry: ResMut<RoomRegistry>,
     mut senders: Query<&mut MessageSender<MapTransitionStart>>,
     respawn_query: Query<(&avian3d::prelude::Position, &MapInstanceId), With<RespawnPoint>>,
 ) {
-    for (entity, preflight) in &mut active {
+    for (entity, preflight) in &active {
         if preflight.stage != MapPreflightStage::CommitTransition {
-            trace!(?preflight.stage, "active preflight is not ready to commit transition");
+            if preflight.is_changed() {
+                trace!(?preflight.stage, "active preflight is not ready to commit transition");
+            }
             continue;
         }
         let MapPreflightKind::MapSwitch {

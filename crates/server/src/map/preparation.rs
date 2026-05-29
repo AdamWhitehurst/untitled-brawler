@@ -21,7 +21,7 @@ use super::{MapLoadState, MapPreparation, MapTransitionParams};
 pub fn ensure_map_exists(
     commands: &mut Commands,
     registry: &mut MapRegistry,
-    map_state_query: &Query<&MapLoadState>,
+    map_state_query: &Query<Ref<MapLoadState>>,
     map_params_query: &Query<(&VoxelMapConfig, &MapDimensions)>,
     save_path: &WorldSavePath,
     map_id: &MapInstanceId,
@@ -30,7 +30,7 @@ pub fn ensure_map_exists(
         let state = map_state_query
             .get(entity)
             .expect("registered map entity must have MapLoadState");
-        match state {
+        match &*state {
             MapLoadState::Ready => {
                 let (config, dimensions) = map_params_query
                     .get(entity)
@@ -44,11 +44,13 @@ pub fn ensure_map_exists(
             MapLoadState::CheckingPersistence
             | MapLoadState::AwaitingMeta
             | MapLoadState::AwaitingEntities => {
-                trace!(
-                    ?map_id,
-                    ?state,
-                    "map exists but is not ready for transition yet"
-                );
+                if state.is_changed() {
+                    trace!(
+                        ?map_id,
+                        state = ?*state,
+                        "map exists but is not ready for transition yet"
+                    );
+                }
                 return MapPreparation::Pending;
             }
         }
