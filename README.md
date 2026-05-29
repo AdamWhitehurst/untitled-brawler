@@ -157,7 +157,7 @@ Gameplay hotkeys are filtered through client-local input ownership so focused UI
 
 ## Nostr/Blossom Map Persistence
 
-Persistent maps still write to local filesystem stores first. When remote publishing is enabled, server-owned Overworld saves are tracked with per-map `remote_publish_journal.bin` entries, `local_head.bin`, and `accepted_head.bin`; failed remote publishes block later remote entries while preserving local files. Blossom uploads are authorized with BUD-11 `Authorization: Nostr ...` tokens signed by the configured Nostr keys.
+Persistent maps still write to local filesystem stores first. When remote publishing is enabled, server-owned Overworld saves are tracked with per-map `remote_publish_journal.bin` entries, `local_head.bin`, and `accepted_head.bin`; failed remote publishes block later remote entries while preserving local files. Blossom uploads are authorized with BUD-11 `Authorization: Nostr ...` tokens signed by the configured Nostr keys. Remote restore is enabled by `SERVER_MAP_REMOTE_READ=1` or implicitly by `SERVER_MAP_REMOTE_PUBLISH=1`; startup preflight then queries Nostr for the latest server-owned Overworld manifest and downloads Blossom payloads from `SERVER_BLOSSOM_PUBLIC_BASE_URL`/`SERVER_BLOSSOM_ALLOWED_HOSTS` before falling back to local files.
 
 Enable server-owned Overworld remote publishing with:
 
@@ -169,5 +169,7 @@ SERVER_NSEC='nsec1...' \
 NOSTR_RELAYS='wss://relay.damus.io,wss://nos.lol' \
 cargo server
 ```
+
+For restore-only testing without publishing, use `SERVER_MAP_REMOTE_READ=1` with `SERVER_BLOSSOM_PUBLIC_BASE_URL` or `SERVER_BLOSSOM_ALLOWED_HOSTS`, `SERVER_NSEC`, and `NOSTR_RELAYS`. To test a clean remote restore safely, move `worlds/` aside instead of deleting it, then restore the backup if remote materialization fails.
 
 For manual failure-path testing, add `SERVER_MAP_REMOTE_PUBLISH_FAIL_FIRST=1` to force the first manifest publish to fail after Blossom payload upload.
