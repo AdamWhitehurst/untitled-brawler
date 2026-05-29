@@ -105,6 +105,8 @@ pub struct WorldDirtyState {
     pub is_dirty: bool,
     pub last_edit_time: f64,
     pub first_dirty_time: Option<f64>,
+    /// Maps whose saved entities changed since the last save; drives the entity publish slot.
+    pub entities_dirty: HashSet<MapInstanceId>,
 }
 
 impl Default for WorldDirtyState {
@@ -113,7 +115,25 @@ impl Default for WorldDirtyState {
             is_dirty: false,
             last_edit_time: 0.0,
             first_dirty_time: None,
+            entities_dirty: HashSet::new(),
         }
+    }
+}
+
+impl WorldDirtyState {
+    /// Starts (or extends) the debounced save window for any map content change.
+    pub fn mark_dirty(&mut self, now: f64) {
+        if !self.is_dirty {
+            self.first_dirty_time = Some(now);
+        }
+        self.is_dirty = true;
+        self.last_edit_time = now;
+    }
+
+    /// Records that a map's saved entities changed and schedules a save.
+    pub fn mark_entities_dirty(&mut self, map_id: &MapInstanceId, now: f64) {
+        self.mark_dirty(now);
+        self.entities_dirty.insert(map_id.clone());
     }
 }
 
@@ -593,6 +613,7 @@ fn save_dirty_chunks_debounced(
 
         let saved_chunks = enqueue_dirty_chunks(&mut instance, &mut pending_saves, None);
         let content_dirty: HashSet<IVec3> = instance.content_dirty_chunks.drain().collect();
+        let entities_dirty = dirty_state.entities_dirty.remove(map_id);
 
         let spawn_points: Vec<Vec3> = respawn_query
             .iter()
@@ -607,7 +628,7 @@ fn save_dirty_chunks_debounced(
         };
         if matches!(map_id, MapInstanceId::Overworld)
             && remote_publish_config.enabled
-            && !content_dirty.is_empty()
+            && (!content_dirty.is_empty() || entities_dirty)
         {
             let save_id = save_ids.allocate();
             let local_head = persistence::Store::load(
@@ -643,11 +664,7 @@ fn save_dirty_chunks_debounced(
                         })
                         .collect(),
                     chunk_entities: Vec::new(),
-                    map_entities: if map_entities.is_empty() {
-                        nostr_map_persistence::PayloadSlotState::Empty
-                    } else {
-                        nostr_map_persistence::PayloadSlotState::Present(map_entities.clone())
-                    },
+                    map_entities: map_entities_publish_slot(entities_dirty, &map_entities),
                 },
             );
             trace!(
@@ -667,6 +684,23 @@ fn save_dirty_chunks_debounced(
 
     dirty_state.is_dirty = false;
     dirty_state.first_dirty_time = None;
+}
+
+/// Selects the publish slot for map-level entities.
+///
+/// `Absent` when the map's entities did not change this cycle, so chunk-only edits do not
+/// re-upload the entity payload; `Present`/`Empty` carries the current entities when they did.
+fn map_entities_publish_slot(
+    entities_dirty: bool,
+    entities: &[SavedEntity],
+) -> nostr_map_persistence::PayloadSlotState<Vec<SavedEntity>> {
+    if !entities_dirty {
+        nostr_map_persistence::PayloadSlotState::Absent
+    } else if entities.is_empty() {
+        nostr_map_persistence::PayloadSlotState::Empty
+    } else {
+        nostr_map_persistence::PayloadSlotState::Present(entities.to_vec())
+    }
 }
 
 /// Drain dirty chunks from an instance into the `PendingSaves` queue.
@@ -1064,12 +1098,7 @@ fn apply_voxel_edit(
         request.position,
         WorldVoxel::from(request.voxel),
     );
-    let now = time.elapsed_secs_f64();
-    if !dirty_state.is_dirty {
-        dirty_state.first_dirty_time = Some(now);
-    }
-    dirty_state.is_dirty = true;
-    dirty_state.last_edit_time = now;
+    dirty_state.mark_dirty(time.elapsed_secs_f64());
 }
 
 /// Sends an edit acknowledgment to the originating client.
@@ -1118,6 +1147,8 @@ pub fn handle_world_object_placement_requests(
     vox_registry: Res<VoxModelRegistry>,
     vox_assets: Res<Assets<VoxModelAsset>>,
     meshes: Res<Assets<Mesh>>,
+    mut dirty_state: ResMut<WorldDirtyState>,
+    time: Res<Time>,
     mut commands: Commands,
 ) {
     for (client_entity, mut receiver) in &mut receivers {
@@ -1149,7 +1180,7 @@ pub fn handle_world_object_placement_requests(
                         def,
                         request.base_position,
                         map_entity,
-                        map_id,
+                        map_id.clone(),
                         dimensions.chunk_size,
                         &type_registry,
                         &vox_registry,
@@ -1165,6 +1196,7 @@ pub fn handle_world_object_placement_requests(
                         },
                         &mut ack_senders,
                     );
+                    dirty_state.mark_entities_dirty(&map_id, time.elapsed_secs_f64());
                 }
                 Err(reason) => {
                     trace!(
@@ -1285,6 +1317,8 @@ pub fn handle_world_object_delete_requests(
         &StoreBackend<IVec3, Vec<WorldObjectSpawn>, FsChunkEntitiesStore>,
         &mut PendingStoreOps<IVec3, Vec<WorldObjectSpawn>>,
     )>,
+    mut dirty_state: ResMut<WorldDirtyState>,
+    time: Res<Time>,
     mut commands: Commands,
 ) {
     for (client_entity, mut receiver) in &mut receivers {
@@ -1326,6 +1360,7 @@ pub fn handle_world_object_delete_requests(
                         },
                         &mut ack_senders,
                     );
+                    dirty_state.mark_entities_dirty(&map_id, time.elapsed_secs_f64());
                 }
                 Err(reason) => {
                     send_world_object_edit_reject(
@@ -1997,12 +2032,7 @@ fn apply_voxel_changes(
             .iter()
             .map(|change| (change.position, WorldVoxel::from(change.voxel))),
     );
-    let now = time.elapsed_secs_f64();
-    if !dirty_state.is_dirty {
-        dirty_state.first_dirty_time = Some(now);
-    }
-    dirty_state.is_dirty = true;
-    dirty_state.last_edit_time = now;
+    dirty_state.mark_dirty(time.elapsed_secs_f64());
 }
 
 fn send_brush_edit_ack(
@@ -2481,6 +2511,42 @@ mod tests {
             parse_blossom_allowed_hosts(Some("Blossom.Example, cdn.example ")),
             BTreeSet::from(["blossom.example".to_string(), "cdn.example".to_string()])
         );
+    }
+
+    #[test]
+    fn entity_change_marks_dirty_and_records_map() {
+        let mut dirty = WorldDirtyState::default();
+        let map_id = MapInstanceId::Overworld;
+
+        dirty.mark_entities_dirty(&map_id, 1.0);
+
+        assert!(dirty.is_dirty);
+        assert_eq!(dirty.first_dirty_time, Some(1.0));
+        assert!(dirty.entities_dirty.contains(&map_id));
+    }
+
+    #[test]
+    fn map_entities_slot_absent_unless_entities_changed() {
+        let entities = vec![SavedEntity {
+            kind: SavedEntityKind::RespawnPoint,
+            position: Vec3::ZERO,
+        }];
+
+        // Unchanged this cycle (e.g. a chunk-only edit) -> do not re-upload entities.
+        assert!(matches!(
+            map_entities_publish_slot(false, &entities),
+            nostr_map_persistence::PayloadSlotState::Absent
+        ));
+        // Changed with entities present -> upload the current list.
+        assert!(matches!(
+            map_entities_publish_slot(true, &entities),
+            nostr_map_persistence::PayloadSlotState::Present(_)
+        ));
+        // Changed to empty -> explicit empty slot, not absent.
+        assert!(matches!(
+            map_entities_publish_slot(true, &[]),
+            nostr_map_persistence::PayloadSlotState::Empty
+        ));
     }
 
     #[test]
