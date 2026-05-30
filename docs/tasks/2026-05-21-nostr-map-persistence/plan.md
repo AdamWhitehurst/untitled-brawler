@@ -2338,8 +2338,8 @@ impl RelayPool {
 
 #### Manual
 
-- [ ] Review test fixtures to confirm they cover one-field-at-a-time tampering for signature, pubkey, map id, kind, tags, revision, previous hash, descriptor slot, blob hash, and blob size.
-- [ ] Confirm no test requires an external relay, Blossom server, local HTTP server, or network access.
+- [x] Review test fixtures to confirm they cover one-field-at-a-time tampering for signature, pubkey, map id, kind, tags, revision, previous hash, descriptor slot, blob hash, and blob size.
+- [x] Confirm no test requires an external relay, Blossom server, local HTTP server, or network access.
 
 ---
 
@@ -3044,8 +3044,8 @@ Add tests proving chunk-entity changes enqueue/publish alongside terrain and pre
 
 #### Manual
 
-- [ ] Run a server with remote publishing enabled (`SERVER_MAP_REMOTE_PUBLISH=1`, `SERVER_BLOSSOM_UPLOAD_URL`, `SERVER_BLOSSOM_PUBLIC_BASE_URL`, `NOSTR_RELAYS`), make two overworld edits quickly, and confirm logs show only one in-flight publish for `Overworld`.
-- [ ] Force the first manifest publish to fail with `SERVER_MAP_REMOTE_PUBLISH_FAIL_FIRST=1` and confirm later entries wait while local filesystem saves still advance.
+- [x] Run a server with remote publishing enabled (`SERVER_MAP_REMOTE_PUBLISH=1`, `SERVER_BLOSSOM_UPLOAD_URL`, `SERVER_BLOSSOM_PUBLIC_BASE_URL`, `NOSTR_RELAYS`), make two overworld edits quickly, and confirm logs show only one in-flight publish for `Overworld`.
+- [x] Force the first manifest publish to fail with `SERVER_MAP_REMOTE_PUBLISH_FAIL_FIRST=1` and confirm later entries wait while local filesystem saves still advance.
 
 ---
 
