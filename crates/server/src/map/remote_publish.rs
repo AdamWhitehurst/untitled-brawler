@@ -515,7 +515,7 @@ pub fn apply_publish_results(
             journal.entries[entry_index].status = RemotePublishStatus::InFlight;
             return Err(error);
         }
-        trace!(
+        info!(
             ?map_id,
             ?manifest_hash,
             local_revision_number = journal.entries[entry_index]
