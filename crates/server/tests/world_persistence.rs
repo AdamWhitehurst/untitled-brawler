@@ -9,8 +9,8 @@ use server::persistence::fs_map_meta::FsMapMetaStore;
 use server::persistence::{
     active_pointer_path, assemble_validated_map_save, cleanup_materialization_staging,
     map_save_dir, materialize_validated_map_save, store_map_dir_for_loading,
-    FsAcceptedMapHeadStore, MapMeta, SaveBase, ServerValidatedMapDelta, ServerValidatedMapSave,
-    STAGING_DIR,
+    FsAcceptedMapHeadStore, FsLocalMapHeadStore, MapMeta, SaveBase, ServerValidatedMapDelta,
+    ServerValidatedMapSave, STAGING_DIR,
 };
 use voxel_map_engine::config::{WorldObjectPositionKind, WorldObjectSpawn};
 use voxel_map_engine::persistence::fs_chunk::FsChunkStore;
@@ -185,7 +185,7 @@ fn remote_restore_missing_local_save_materializes_meta_chunks_and_entities() {
     );
     assert_eq!(
         FsAcceptedMapHeadStore {
-            map_dir: Arc::new(active_dir),
+            map_dir: Arc::new(map_dir),
         }
         .load(&())
         .unwrap()
@@ -265,9 +265,38 @@ fn remote_restore_accepted_head_written_after_files() {
     materialize_validated_map_save(&map_dir, &save).expect("materialize remote save");
     let active_dir = store_map_dir_for_loading(&map_dir).expect("active dir");
 
+    // Content lives in the active revision dir; head pointers live at the map top-level dir.
     assert!(active_dir.join("map.meta.bin").exists());
-    assert!(active_dir.join("accepted_head.bin").exists());
+    assert!(map_dir.join("accepted_head.bin").exists());
+    assert!(map_dir.join("local_head.bin").exists());
+    assert!(!active_dir.join("accepted_head.bin").exists());
     assert!(active_pointer_path(&map_dir).exists());
+}
+
+#[test]
+fn remote_restore_seeds_local_head_for_next_publish_revision() {
+    let tmp = tempfile::tempdir().unwrap();
+    let map_dir = map_save_dir(tmp.path(), &MapInstanceId::Overworld);
+    let save = remote_save(77, remote_revision(9, 5, None));
+
+    materialize_validated_map_save(&map_dir, &save).expect("materialize remote save");
+
+    let local_head = FsLocalMapHeadStore {
+        map_dir: Arc::new(map_dir.clone()),
+    }
+    .load(&())
+    .expect("load local head")
+    .expect("local head present at map top-level after restore");
+    assert_eq!(local_head.local_revision_number, 5);
+
+    // A post-restore publish must descend from the restored head (6), not reset to 1.
+    let next = server::map::remote_publish::next_publish_revision_number(
+        Some(&local_head),
+        &server::persistence::RemotePublishJournal::default(),
+        &server::map::remote_publish::PendingRemotePublishDeltas::default(),
+        &server::map::remote_publish::PendingPublishBySaveId::default(),
+    );
+    assert_eq!(next, 6);
 }
 
 #[test]

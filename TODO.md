@@ -30,8 +30,15 @@
 
 ---
 
+## Bugs
+
+- [ ] `FsLocalUnpublishedPublishDraftStore` is pinned to the startup `map_dir` in `init_overworld_entity` and is not re-pointed after a remote restore (same bug class as the head-store revision-reset fixed in the publish-restore work). Unpublished publish drafts written after a restore can be read from a different directory on the next startup, so a pending draft can be lost across a restore. Fix by giving drafts a fixed map-level (top-level) location, like the heads.
+
+---
+
 ## Considering
 
+- Out of scope (flagging, not fixing): the FsLocalUnpublishedPublishDraftStore is pinned the same way and could lose unpublished drafts across a restore — same bug class
 - [ ] Guiding player character, ability characters follow
 - process distance sprite rigs at half the rate for performance?
 - Social system that hooks into dialogue system

@@ -775,15 +775,16 @@ pub fn materialize_validated_map_save(
     let staging_dir = create_revision_staging_dir(save_dir, &save.revision)?;
     write_full_revision_to_staging(&staging_dir, save)?;
     validate_staged_revision(&staging_dir, save)?;
-    FsAcceptedMapHeadStore {
-        map_dir: Arc::new(staging_dir.clone()),
-    }
-    .save(&(), &save.revision)?;
+    atomically_promote_staged_revision(save_dir, &staging_dir, &save.revision)?;
+    // Heads live at the map's top-level dir (not inside the revision snapshot). Write them after
+    // promoting content, accepted-head last as the commit marker; a crash between promote and the
+    // head write only makes the idempotent restore re-run.
+    let head_dir = Arc::new(save_dir.to_path_buf());
     FsLocalMapHeadStore {
-        map_dir: Arc::new(staging_dir.clone()),
+        map_dir: head_dir.clone(),
     }
     .save(&(), &local_head_from_remote_save(save))?;
-    atomically_promote_staged_revision(save_dir, &staging_dir, &save.revision)?;
+    FsAcceptedMapHeadStore { map_dir: head_dir }.save(&(), &save.revision)?;
     Ok(())
 }
 

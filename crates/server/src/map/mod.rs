@@ -241,12 +241,14 @@ fn init_overworld_entity(
             .expect("overworld active revision pointer must be valid before startup"),
     );
     let owner = server_identity.protocol_public_key();
+    // Head pointers span revisions, so they live at the map's top-level dir, not inside the
+    // active revision snapshot. This keeps the running publish path reading the same heads the
+    // restore seeds, regardless of fresh-start / restore / existing-world.
+    let head_dir = Arc::new(canonical_map_dir.clone());
     let accepted_head_store = FsAcceptedMapHeadStore {
-        map_dir: map_dir.clone(),
+        map_dir: head_dir.clone(),
     };
-    let local_head_store = FsLocalMapHeadStore {
-        map_dir: map_dir.clone(),
-    };
+    let local_head_store = FsLocalMapHeadStore { map_dir: head_dir };
     let draft_store = FsLocalUnpublishedPublishDraftStore {
         map_dir: map_dir.clone(),
     };
