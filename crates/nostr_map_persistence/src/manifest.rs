@@ -69,7 +69,11 @@ pub struct NostrMapManifest {
     pub descriptor_root: [u8; 32],
     /// Server-signed authorization for client-published homebase manifests.
     /// `None` for server-owned overworld manifests and pre-attestation revisions.
-    #[serde(default)]
+    ///
+    /// Skipped when `None` so overworld manifests serialize byte-identically to
+    /// manifests published before this field existed, preserving manifest-hash
+    /// (and `#d` tag) compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub homebase_attestation: Option<protocol::HomebasePublicationAttestation>,
 }
 
@@ -497,6 +501,48 @@ mod tests {
             descriptor_root,
             homebase_attestation: None,
         }
+    }
+
+    #[test]
+    fn overworld_manifest_omits_homebase_attestation_for_hash_back_compat() {
+        let (_secret, owner) = owner();
+        let overworld = manifest(owner);
+        assert!(overworld.homebase_attestation.is_none());
+
+        let json = String::from_utf8(canonical_manifest_bytes(&overworld).unwrap()).unwrap();
+        assert!(
+            !json.contains("homebase_attestation"),
+            "overworld (None) manifest must omit the field so it hashes identically to \
+             manifests published before the field existed: {json}"
+        );
+
+        // A legacy no-field manifest JSON parses and recomputes to the same hash, so its
+        // `#d` tag still verifies.
+        let reparsed = manifest_from_json(&json).unwrap();
+        assert_eq!(
+            compute_manifest_hash(&reparsed).unwrap(),
+            compute_manifest_hash(&overworld).unwrap()
+        );
+
+        let mut homebase = overworld.clone();
+        homebase.map_id = MapInstanceId::Homebase { owner };
+        homebase.homebase_attestation = Some(protocol::HomebasePublicationAttestation {
+            owner,
+            map_id: MapInstanceId::Homebase { owner },
+            server_revision: 0,
+            previous_manifest_hash: None,
+            descriptor_root: homebase.descriptor_root,
+            payload_scope: protocol::HomebasePayloadScope::default(),
+            expires_at: 0,
+            server_pubkey: owner,
+            server_signature: vec![1; 64],
+        });
+        let homebase_json =
+            String::from_utf8(canonical_manifest_bytes(&homebase).unwrap()).unwrap();
+        assert!(
+            homebase_json.contains("homebase_attestation"),
+            "homebase (Some) manifest must include the attestation field"
+        );
     }
 
     fn signed_manifest_event(manifest: &NostrMapManifest, secret: SecretKey) -> String {
