@@ -27,6 +27,7 @@ lightyear = { workspace = true, features = [
 client_lightyear = { workspace = true }
 protocol = { workspace = true }
 nostr_client = { workspace = true }
+nostr_map_persistence = { workspace = true }
 persistence = { workspace = true }
 render = { path = "../render" }
 ui = { path = "../ui" }

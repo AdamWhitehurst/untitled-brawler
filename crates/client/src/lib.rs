@@ -2,6 +2,7 @@ pub mod auth;
 pub mod gameplay;
 pub mod input;
 pub mod map;
+pub mod map_publication;
 pub mod persistence;
 pub mod transition;
 pub mod world_object;

@@ -7,6 +7,7 @@ pub mod world_object;
 
 use bevy::prelude::*;
 use client::auth::ClientAuthPlugin;
+use client::map_publication::ClientMapPublicationPlugin;
 use client::persistence::fs_encrypted_identity::{nostr_identity_dir, FsEncryptedIdentityStore};
 use client_lightyear::{ClientNetworkConfig, ClientNetworkPlugin};
 use dev::DevPlugin;
@@ -92,6 +93,7 @@ fn main() {
         .add_plugins(ClientGameplayPlugin)
         .add_plugins(input::ClientInputCommandPlugin)
         .add_plugins(ClientMapPlugin)
+        .add_plugins(ClientMapPublicationPlugin)
         .add_plugins(transition::ClientTransitionPlugin)
         .add_plugins(RenderPlugin)
         .add_plugins(UiPlugin)
