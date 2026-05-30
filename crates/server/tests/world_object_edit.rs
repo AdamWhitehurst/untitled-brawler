@@ -779,7 +779,7 @@ fn rotate_persists_through_chunk_entity_save_restore_payload() {
 
 #[test]
 fn world_object_edit_remote_publish_chunk_entity_empty_payload_encodes_and_decodes() {
-    let bytes = server::map::remote_publish::encode_chunk_entities_payload(Vec::new())
+    let bytes = nostr_map_persistence::encode_chunk_entities_payload(Vec::new())
         .expect("empty chunk entity payload encodes");
     assert!(!bytes.is_empty());
 }

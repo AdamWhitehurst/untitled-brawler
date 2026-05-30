@@ -1,5 +1,6 @@
 pub mod attestation;
 pub mod manifest;
+pub mod payloads;
 pub mod policy;
 pub mod publish;
 pub mod read;
@@ -10,6 +11,10 @@ pub use attestation::{
     attestation_signing_payload, sign_homebase_attestation, verify_homebase_attestation,
     verify_homebase_attestation_signature, AttestationSigner, AttestationVerifier,
     HOMEBASE_ATTESTATION_SIGNING_DOMAIN,
+};
+pub use payloads::{
+    encode_chunk_entities_payload, encode_chunk_payload, encode_map_entities_payload,
+    encode_map_meta_payload, upload_publish_slot,
 };
 pub use protocol::{HomebasePayloadScope, HomebasePublicationAttestation};
 pub use validation::validate_homebase_manifest_attestation;

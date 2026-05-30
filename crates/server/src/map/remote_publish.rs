@@ -7,8 +7,9 @@ use bevy::prelude::*;
 use bevy::tasks::Task;
 use nostr_client::BlobRef;
 use nostr_map_persistence::{
-    build_signed_map_manifest_event, compute_descriptor_root, manifest_payload_descriptor_order,
-    ManifestHash, ManifestPayloadDescriptor, ManifestPayloadSlot, MapManifestSigner,
+    build_signed_map_manifest_event, compute_descriptor_root, encode_chunk_entities_payload,
+    encode_chunk_payload, encode_map_entities_payload, encode_map_meta_payload,
+    manifest_payload_descriptor_order, upload_publish_slot, ManifestHash, MapManifestSigner,
     MapPersistenceRejection, MapRevision, NostrManifestPublishStore, NostrMapManifest,
     PayloadClass, PayloadKey, PayloadSlotState, MAP_MANIFEST_SCHEMA_VERSION,
 };
@@ -16,11 +17,8 @@ use persistence::{
     AsyncStore, AsyncStoreBackend, PendingAsyncStoreOps, PersistenceError, SaveOpId, Store,
     StoreBackend,
 };
-use protocol::map::SavedEntity;
 use protocol::{MapInstanceId, NostrPublicKey};
 use sha2::{Digest, Sha256};
-use voxel_map_engine::config::WorldObjectSpawn;
-use voxel_map_engine::persistence::ChunkFileEnvelope;
 use voxel_map_engine::prelude::{ChunkSaveCompleted, ChunkSaveFailed};
 
 use crate::persistence::{
@@ -274,112 +272,22 @@ pub fn local_head_from_unpublished_draft(persisted: &LocalUnpublishedPublishDraf
     }
 }
 
-/// Encodes map metadata in the same format as the filesystem map metadata store.
-pub fn encode_map_meta_payload(value: MapMeta) -> Result<Vec<u8>, MapPersistenceRejection> {
-    bincode::serialize(&value)
-        .map_err(|error| MapPersistenceRejection::Invalid(format!("encode map meta: {error}")))
-}
-
-/// Encodes terrain chunk data in the same format as the filesystem terrain store.
-pub fn encode_chunk_payload(value: ChunkFileEnvelope) -> Result<Vec<u8>, MapPersistenceRejection> {
-    zstd_bincode_encode(&value, "chunk payload")
-}
-
-/// Encodes chunk entity data in the same format as the filesystem chunk entity store.
-pub fn encode_chunk_entities_payload(
-    value: Vec<WorldObjectSpawn>,
-) -> Result<Vec<u8>, MapPersistenceRejection> {
-    #[derive(serde::Serialize)]
-    struct Envelope {
-        version: u32,
-        spawns: Vec<WorldObjectSpawn>,
-    }
-    zstd_bincode_encode(
-        &Envelope {
-            version: 3,
-            spawns: value,
-        },
-        "chunk entities payload",
+/// Encodes server `MapMeta` through the shared payload encoder.
+///
+/// Adapts the bevy-typed `MapMeta` to the bevy-free primitive signature
+/// `nostr_map_persistence` exposes so client and server produce identical bytes.
+fn encode_server_map_meta(value: MapMeta) -> Result<Vec<u8>, MapPersistenceRejection> {
+    let spawn_points = value
+        .spawn_points
+        .iter()
+        .map(|point| [point.x, point.y, point.z])
+        .collect();
+    encode_map_meta_payload(
+        value.version,
+        value.seed,
+        value.generation_version,
+        spawn_points,
     )
-}
-
-/// Encodes map-level entities in the same format as the filesystem entity store.
-pub fn encode_map_entities_payload(
-    value: Vec<SavedEntity>,
-) -> Result<Vec<u8>, MapPersistenceRejection> {
-    #[derive(serde::Serialize)]
-    struct Envelope {
-        version: u32,
-        entities: Vec<SavedEntity>,
-    }
-    bincode::serialize(&Envelope {
-        version: 1,
-        entities: value,
-    })
-    .map_err(|error| {
-        MapPersistenceRejection::Invalid(format!("encode map entities payload: {error}"))
-    })
-}
-
-fn zstd_bincode_encode<T: serde::Serialize>(
-    value: &T,
-    label: &str,
-) -> Result<Vec<u8>, MapPersistenceRejection> {
-    let encoded = bincode::serialize(value)
-        .map_err(|error| MapPersistenceRejection::Invalid(format!("encode {label}: {error}")))?;
-    zstd::encode_all(encoded.as_slice(), 0)
-        .map_err(|error| MapPersistenceRejection::Invalid(format!("compress {label}: {error}")))
-}
-
-/// Uploads one payload slot and appends the signed manifest descriptor.
-pub async fn upload_publish_slot<T>(
-    payloads: &mut Vec<ManifestPayloadDescriptor>,
-    blob_store: &impl AsyncStore<BlobRef, Vec<u8>>,
-    public_blossom_base_url: &url::Url,
-    class: PayloadClass,
-    key: PayloadKey,
-    schema_version: u32,
-    slot: PayloadSlotState<T>,
-    encode: impl FnOnce(T) -> Result<Vec<u8>, MapPersistenceRejection>,
-) -> Result<(), MapPersistenceRejection> {
-    let manifest_slot = match slot {
-        PayloadSlotState::Present(value) => {
-            let bytes = encode(value)?;
-            let sha256: [u8; 32] = Sha256::digest(&bytes).into();
-            let mut get_url = public_blossom_base_url.clone();
-            get_url.set_path(&hex::encode(sha256));
-            let blob = BlobRef {
-                sha256,
-                size: bytes.len() as u64,
-                content_type: "application/octet-stream".to_string(),
-                urls: vec![get_url.to_string()],
-            };
-            blob_store
-                .save(&blob, &bytes)
-                .await
-                .map_err(|error| MapPersistenceRejection::Unavailable(error.to_string()))?;
-            trace!(
-                ?class,
-                ?key,
-                schema_version,
-                sha256 = %hex::encode(sha256),
-                size = bytes.len(),
-                url = %get_url,
-                "uploaded Blossom map payload"
-            );
-            ManifestPayloadSlot::Present { blob }
-        }
-        PayloadSlotState::Empty => ManifestPayloadSlot::Empty,
-        PayloadSlotState::Absent => ManifestPayloadSlot::Absent,
-        PayloadSlotState::Tombstoned => ManifestPayloadSlot::Tombstoned,
-    };
-    payloads.push(ManifestPayloadDescriptor {
-        class,
-        key,
-        slot: manifest_slot,
-        schema_version,
-    });
-    Ok(())
 }
 
 /// Converts a server Overworld draft into a signed pending remote journal entry.
@@ -403,7 +311,7 @@ pub async fn prepare_server_map_publish_entry(
         PayloadKey::Singleton,
         1,
         draft.meta.clone(),
-        encode_map_meta_payload,
+        encode_server_map_meta,
     )
     .await?;
     for (chunk_pos, slot) in draft.chunks.clone() {
