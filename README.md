@@ -173,3 +173,26 @@ cargo server
 For restore-only testing without publishing, use `SERVER_MAP_REMOTE_READ=1` with `SERVER_BLOSSOM_PUBLIC_BASE_URL` or `SERVER_BLOSSOM_ALLOWED_HOSTS`, `SERVER_NSEC`, and `NOSTR_RELAYS`. To test a clean remote restore safely, move `worlds/` aside instead of deleting it, then restore the backup if remote materialization fails.
 
 For manual failure-path testing, add `SERVER_MAP_REMOTE_PUBLISH_FAIL_FIRST=1` to force the first manifest publish to fail after Blossom payload upload.
+
+### Player-Owned Homebase Publication
+
+A player can publish their own Homebase to Nostr. Because the client cannot
+faithfully reproduce the server's authoritative save bytes from replication, the
+flow is "server encodes, client signs": the client presses `F9` to send a
+`HomebaseAttestationRequest`; the server reads back its authoritative Homebase
+save, uploads the payload blobs to Blossom, signs a `HomebasePublicationAttestation`,
+and returns an unsigned `NostrMapManifest`; the client signs that manifest event
+with the **player's** Nostr key and publishes it to relays. Remote import of a
+Homebase manifest is accepted only if it carries a valid player signature and a
+valid server attestation (the temporary Phase 3 insecure import path is removed).
+
+Homebase publication requires the same server remote-publish configuration as the
+Overworld (`SERVER_MAP_REMOTE_PUBLISH=1` with the `SERVER_BLOSSOM_*`, `SERVER_NSEC`,
+and `NOSTR_RELAYS` settings above), plus a client running with a loaded Nostr
+identity and configured relays.
+
+> Not yet enforced: progression-bearing-data rejection and per-player entitlement
+> checks on imported Homebase data (plan item 5.7) are deferred — no progression or
+> entitlement types exist in the codebase yet. The server attestation requirement is
+> the current Homebase import security boundary; progression-data filtering is a
+> follow-up.

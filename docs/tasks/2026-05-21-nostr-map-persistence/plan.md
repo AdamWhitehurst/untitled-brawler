@@ -3414,14 +3414,14 @@ Replace the existing placeholder-only file with tests named `homebase_publicatio
 
 #### Automated
 
-- [ ] `if pgrep -af 'cargo (build|check|test)|cargo-make|rustc' | grep -v pgrep; then echo busy >&2; exit 1; fi`
-- [ ] `cargo test -p client homebase_publication`
-- [ ] `cargo test -p server remote_restore`
+- [x] `if pgrep -af 'cargo (build|check|test)|cargo-make|rustc' | grep -v pgrep; then echo busy >&2; exit 1; fi`
+- [x] `cargo test -p client homebase_publication`
+- [x] `cargo test -p server remote_restore`
 
 #### Manual
 
-- [ ] Run server and client, edit a homebase, wait for server ack/replication, request server attestation, publish from client, then restart/import and confirm import succeeds only with both valid player signature and valid server attestation.
-- [ ] Try to publish an overworld or foreign-owner homebase manifest from a client identity and confirm it is rejected.
+- [ ] Run server (with `SERVER_MAP_REMOTE_PUBLISH=1` + `SERVER_BLOSSOM_*` + `SERVER_NSEC` + `NOSTR_RELAYS`) and client (with a loaded identity + relays), edit a homebase, press `F9` to publish, then restart/import and confirm import succeeds only with both a valid player signature and a valid server attestation.
+- [ ] Confirm a homebase publish is rejected when the server has remote publishing disabled, and that import rejects a manifest with a missing/invalid attestation. (Foreign-owner/overworld publication is structurally impossible: the request carries no map id and the server only ever reads/attests the authenticated player's own homebase.)
 
 ---
 
