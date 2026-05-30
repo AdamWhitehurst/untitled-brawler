@@ -14,7 +14,8 @@ pub use attestation::{
 };
 pub use payloads::{
     encode_chunk_entities_payload, encode_chunk_payload, encode_map_entities_payload,
-    encode_map_meta_payload, upload_publish_slot,
+    encode_map_meta_payload, upload_publish_slot, CHUNK_ENTITIES_SCHEMA_VERSION,
+    MAP_ENTITIES_SCHEMA_VERSION, MAP_META_SCHEMA_VERSION,
 };
 pub use protocol::{HomebasePayloadScope, HomebasePublicationAttestation};
 pub use validation::validate_homebase_manifest_attestation;

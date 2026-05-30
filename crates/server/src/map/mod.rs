@@ -1017,6 +1017,7 @@ impl Plugin for ServerMapPlugin {
                     push_chunks_to_clients,
                     save_dirty_chunks_debounced,
                     handle_map_switch_requests,
+                    homebase_publication::handle_homebase_attestation_requests,
                     crate::transition::complete_map_transition,
                     protocol::attach_chunk_colliders,
                     crate::chunk_entities::spawn_chunk_entities

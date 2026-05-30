@@ -11,6 +11,13 @@ use crate::manifest::{
     PayloadKey, PayloadSlotState,
 };
 
+/// Schema version for `PayloadClass::MapMeta` payloads.
+pub const MAP_META_SCHEMA_VERSION: u32 = 1;
+/// Schema version for `PayloadClass::ChunkEntities` payloads.
+pub const CHUNK_ENTITIES_SCHEMA_VERSION: u32 = 3;
+/// Schema version for `PayloadClass::MapEntities` payloads.
+pub const MAP_ENTITIES_SCHEMA_VERSION: u32 = 1;
+
 /// Wire form of map metadata, encoded identically to the server `MapMeta` struct.
 ///
 /// Uses `[f32; 3]` spawn points (not a Bevy `Vec3`) so this crate stays free of a
@@ -58,7 +65,7 @@ pub fn encode_chunk_entities_payload(
     }
     zstd_bincode_encode(
         &Envelope {
-            version: 3,
+            version: CHUNK_ENTITIES_SCHEMA_VERSION,
             spawns: value,
         },
         "chunk entities payload",
@@ -75,7 +82,7 @@ pub fn encode_map_entities_payload(
         entities: Vec<SavedEntity>,
     }
     bincode::serialize(&Envelope {
-        version: 1,
+        version: MAP_ENTITIES_SCHEMA_VERSION,
         entities: value,
     })
     .map_err(|error| {
