@@ -109,22 +109,21 @@ pub fn verify_homebase_publication_attestation_request(
     )
 }
 
-/// Server boundary for accepting a client-published homebase manifest: verifies the
-/// player signature is already checked upstream, then enforces the server attestation gate.
+/// Server boundary for accepting a client-published homebase manifest: the player
+/// signature over the manifest event is verified upstream, this enforces the server
+/// attestation gate. Expiry is not checked so historical revisions stay loadable.
 ///
 /// Progression-bearing-data rejection and entitlement enforcement (plan 5.7) are a
 /// deferred follow-up and are NOT applied here.
 pub fn validate_homebase_manifest_import(
     manifest: &NostrMapManifest,
-    now_unix: u64,
 ) -> Result<(), MapPersistenceRejection> {
-    validate_homebase_manifest_attestation(&ServerAttestationVerifier, manifest, now_unix)
+    validate_homebase_manifest_attestation(&ServerAttestationVerifier, manifest)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostr_client::NostrKeys;
     use nostr_map_persistence::attestation::verify_homebase_attestation;
 
     fn server_keys() -> NostrKeys {
@@ -170,7 +169,7 @@ mod tests {
         let keys = server_keys();
         let owner = NostrPublicKey([42; 32]);
         let state = authoritative(owner);
-        assert!(verify_homebase_publication_attestation_request(
+        let result = verify_homebase_publication_attestation_request(
             &ServerAttestationSigner(&keys),
             owner,
             &MapInstanceId::Overworld,
@@ -179,8 +178,8 @@ mod tests {
             &state,
             1_000,
             600,
-        )
-        .is_err());
+        );
+        assert!(result.is_err());
     }
 
     #[test]
@@ -189,7 +188,7 @@ mod tests {
         let owner = NostrPublicKey([42; 32]);
         let foreign = NostrPublicKey([99; 32]);
         let state = authoritative(owner);
-        assert!(verify_homebase_publication_attestation_request(
+        let result = verify_homebase_publication_attestation_request(
             &ServerAttestationSigner(&keys),
             foreign,
             &MapInstanceId::Homebase { owner },
@@ -198,8 +197,8 @@ mod tests {
             &state,
             1_000,
             600,
-        )
-        .is_err());
+        );
+        assert!(result.is_err());
     }
 
     #[test]
@@ -207,7 +206,7 @@ mod tests {
         let keys = server_keys();
         let owner = NostrPublicKey([42; 32]);
         let state = authoritative(owner);
-        assert!(verify_homebase_publication_attestation_request(
+        let result = verify_homebase_publication_attestation_request(
             &ServerAttestationSigner(&keys),
             owner,
             &MapInstanceId::Homebase { owner },
@@ -216,7 +215,7 @@ mod tests {
             &state,
             1_000,
             600,
-        )
-        .is_err());
+        );
+        assert!(result.is_err());
     }
 }

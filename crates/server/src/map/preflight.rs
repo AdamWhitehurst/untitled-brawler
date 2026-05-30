@@ -235,13 +235,6 @@ fn begin_remote_or_filesystem_decision(
         );
     };
 
-    if matches!(target_map_id, MapInstanceId::Homebase { .. }) {
-        warn!(
-            ?target_map_id,
-            "temporary insecure Phase 3 homebase remote import path is enabled; Phase 5 must require server attestation"
-        );
-    }
-
     let task = spawn_remote_preflight_task(remote_read_context, owner, target_map_id.clone());
     commands
         .entity(entity)
@@ -270,6 +263,11 @@ fn spawn_remote_preflight_task(
         match verify_revision_chain(&chain, None)? {
             RevisionDecision::AtAcceptedHead => return Ok(None),
             RevisionDecision::Descendant(_) => {}
+        }
+        if matches!(target_map_id, MapInstanceId::Homebase { .. }) {
+            for manifest in &chain {
+                super::homebase_publication::validate_homebase_manifest_import(manifest)?;
+            }
         }
         let payloads = download_payloads(&chain, persistence_policy.clone()).await?;
         let raw_save = validate_remote_map_save(

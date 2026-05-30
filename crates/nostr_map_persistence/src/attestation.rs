@@ -84,17 +84,15 @@ pub fn sign_homebase_attestation(
     Ok(attestation)
 }
 
-/// Verifies an attestation signature and expiry against the current time.
-pub fn verify_homebase_attestation(
+/// Verifies only the server signature over an attestation, ignoring expiry.
+///
+/// Used by import/read validation, where an attestation issued long ago is still
+/// valid evidence that the server authorized a now-historical revision. Expiry
+/// bounds the publish window, not how long published data remains loadable.
+pub fn verify_homebase_attestation_signature(
     verifier: &impl AttestationVerifier,
     attestation: &HomebasePublicationAttestation,
-    now_unix: u64,
 ) -> Result<(), MapPersistenceRejection> {
-    if now_unix > attestation.expires_at {
-        return Err(MapPersistenceRejection::Invalid(
-            "homebase attestation expired".into(),
-        ));
-    }
     if attestation.server_signature.is_empty() {
         return Err(MapPersistenceRejection::Invalid(
             "homebase attestation signature is empty".into(),
@@ -106,6 +104,23 @@ pub fn verify_homebase_attestation(
         &payload,
         &attestation.server_signature,
     )
+}
+
+/// Verifies an attestation signature and expiry against the current time.
+///
+/// Used at the publish-window boundary. Import/read validation should use
+/// [`verify_homebase_attestation_signature`] instead.
+pub fn verify_homebase_attestation(
+    verifier: &impl AttestationVerifier,
+    attestation: &HomebasePublicationAttestation,
+    now_unix: u64,
+) -> Result<(), MapPersistenceRejection> {
+    if now_unix > attestation.expires_at {
+        return Err(MapPersistenceRejection::Invalid(
+            "homebase attestation expired".into(),
+        ));
+    }
+    verify_homebase_attestation_signature(verifier, attestation)
 }
 
 #[cfg(test)]

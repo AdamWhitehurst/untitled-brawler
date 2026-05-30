@@ -8,7 +8,8 @@ pub mod validation;
 
 pub use attestation::{
     attestation_signing_payload, sign_homebase_attestation, verify_homebase_attestation,
-    AttestationSigner, AttestationVerifier, HOMEBASE_ATTESTATION_SIGNING_DOMAIN,
+    verify_homebase_attestation_signature, AttestationSigner, AttestationVerifier,
+    HOMEBASE_ATTESTATION_SIGNING_DOMAIN,
 };
 pub use protocol::{HomebasePayloadScope, HomebasePublicationAttestation};
 pub use validation::validate_homebase_manifest_attestation;

@@ -1,6 +1,6 @@
 use protocol::MapInstanceId;
 
-use crate::attestation::{verify_homebase_attestation, AttestationVerifier};
+use crate::attestation::{verify_homebase_attestation_signature, AttestationVerifier};
 use crate::manifest::{MapPersistenceRejection, NostrMapManifest};
 
 /// Verifies that a client-published homebase manifest is authorized by a valid
@@ -11,12 +11,15 @@ use crate::manifest::{MapPersistenceRejection, NostrMapManifest};
 /// server-authority gate: the manifest must carry an attestation whose
 /// signature is valid and whose fields match the manifest one-for-one.
 ///
+/// Expiry is intentionally not checked here: an attestation issued long ago is
+/// still valid evidence for a now-historical revision (see
+/// [`verify_homebase_attestation_signature`]).
+///
 /// Progression-bearing-data rejection and entitlement checks (plan 5.7) are not
 /// performed here and remain a server-side follow-up.
 pub fn validate_homebase_manifest_attestation(
     verifier: &impl AttestationVerifier,
     manifest: &NostrMapManifest,
-    now_unix: u64,
 ) -> Result<(), MapPersistenceRejection> {
     let MapInstanceId::Homebase { owner: map_owner } = manifest.map_id else {
         return Err(MapPersistenceRejection::Invalid(
@@ -34,7 +37,7 @@ pub fn validate_homebase_manifest_attestation(
         ));
     };
 
-    verify_homebase_attestation(verifier, attestation, now_unix)?;
+    verify_homebase_attestation_signature(verifier, attestation)?;
 
     if attestation.owner != manifest.owner {
         return Err(MapPersistenceRejection::Invalid(
@@ -112,7 +115,7 @@ mod tests {
         }
     }
 
-    fn attested_manifest() -> NostrMapManifest {
+    fn attested_manifest_with_expiry(expires_at: u64) -> NostrMapManifest {
         let descriptor_root = [3; 32];
         let attestation = sign_homebase_attestation(
             &StubSigner,
@@ -123,7 +126,7 @@ mod tests {
                 previous_manifest_hash: Some([9; 32]),
                 descriptor_root,
                 payload_scope: HomebasePayloadScope::default(),
-                expires_at: 1_000,
+                expires_at,
                 server_pubkey: SERVER,
                 server_signature: Vec::new(),
             },
@@ -141,9 +144,13 @@ mod tests {
         }
     }
 
+    fn attested_manifest() -> NostrMapManifest {
+        attested_manifest_with_expiry(1_000)
+    }
+
     #[test]
     fn accepts_matching_attested_manifest() {
-        validate_homebase_manifest_attestation(&StubVerifier, &attested_manifest(), 500)
+        validate_homebase_manifest_attestation(&StubVerifier, &attested_manifest())
             .expect("valid attested manifest");
     }
 
@@ -152,7 +159,7 @@ mod tests {
         let mut manifest = attested_manifest();
         manifest.homebase_attestation = None;
         assert!(matches!(
-            validate_homebase_manifest_attestation(&StubVerifier, &manifest, 500),
+            validate_homebase_manifest_attestation(&StubVerifier, &manifest),
             Err(MapPersistenceRejection::Invalid(_))
         ));
     }
@@ -161,28 +168,28 @@ mod tests {
     fn rejects_overworld_manifest() {
         let mut manifest = attested_manifest();
         manifest.map_id = MapInstanceId::Overworld;
-        assert!(validate_homebase_manifest_attestation(&StubVerifier, &manifest, 500).is_err());
+        assert!(validate_homebase_manifest_attestation(&StubVerifier, &manifest).is_err());
     }
 
     #[test]
     fn rejects_revision_mismatch() {
         let mut manifest = attested_manifest();
         manifest.revision = 6;
-        assert!(validate_homebase_manifest_attestation(&StubVerifier, &manifest, 500).is_err());
+        assert!(validate_homebase_manifest_attestation(&StubVerifier, &manifest).is_err());
     }
 
     #[test]
     fn rejects_descriptor_root_mismatch() {
         let mut manifest = attested_manifest();
         manifest.descriptor_root = [1; 32];
-        assert!(validate_homebase_manifest_attestation(&StubVerifier, &manifest, 500).is_err());
+        assert!(validate_homebase_manifest_attestation(&StubVerifier, &manifest).is_err());
     }
 
     #[test]
-    fn rejects_expired_attestation() {
-        assert!(
-            validate_homebase_manifest_attestation(&StubVerifier, &attested_manifest(), 2_000)
-                .is_err()
-        );
+    fn accepts_regardless_of_expiry() {
+        // Import validation does not check expiry; historical revisions stay loadable.
+        let manifest = attested_manifest_with_expiry(0);
+        validate_homebase_manifest_attestation(&StubVerifier, &manifest)
+            .expect("expired-but-signed attestation still imports");
     }
 }
