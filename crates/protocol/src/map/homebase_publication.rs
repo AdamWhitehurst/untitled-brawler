@@ -30,3 +30,22 @@ pub struct HomebasePayloadScope {
     pub includes_meta: bool,
     pub includes_map_entities: bool,
 }
+
+/// Client request asking the server to attest a homebase publication.
+///
+/// The owner is the authenticated player on the connection; the server derives
+/// it rather than trusting a client-supplied identity.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Message)]
+pub struct HomebaseAttestationRequest {
+    pub descriptor_root: [u8; 32],
+    pub payload_scope: HomebasePayloadScope,
+}
+
+/// Server reply to a [`HomebaseAttestationRequest`].
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Message)]
+pub enum HomebaseAttestationResponse {
+    /// The server authorized the publication and signed an attestation.
+    Granted(HomebasePublicationAttestation),
+    /// The server refused; the string explains why (diagnostics only).
+    Rejected(String),
+}

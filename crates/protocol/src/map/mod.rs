@@ -16,7 +16,10 @@ pub use voxel_map_engine::prelude::{VoxelChunk, VoxelType};
 
 pub use chunk::{ChunkChannel, ChunkDataSync, UnloadColumn};
 pub use colliders::attach_chunk_colliders;
-pub use homebase_publication::{HomebasePayloadScope, HomebasePublicationAttestation};
+pub use homebase_publication::{
+    HomebaseAttestationRequest, HomebaseAttestationResponse, HomebasePayloadScope,
+    HomebasePublicationAttestation,
+};
 pub use persistence::{MapSaveTarget, SavedEntity, SavedEntityKind};
 pub use transition::{
     MapChannel, MapTransitionEnd, MapTransitionReady, MapTransitionStart, PendingTransition,

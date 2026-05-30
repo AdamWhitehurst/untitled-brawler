@@ -45,13 +45,13 @@ pub use hit_detection::{
     projectile_collision_layers, terrain_collision_layers, GameLayer,
 };
 pub use map::{
-    attach_chunk_colliders, ChunkChannel, ChunkDataSync, HomebasePayloadScope,
-    HomebasePublicationAttestation, MapChannel, MapInstanceId, MapRegistry, MapSaveTarget,
-    MapSwitchTarget, MapTransitionEnd, MapTransitionReady, MapTransitionStart, Owner,
-    PendingTransition, PlayerMapSwitchRequest, SavedEntity, SavedEntityKind, SectionBlocksUpdate,
-    TransitionReadySent, UnloadColumn, VoxelBrushEditRequest, VoxelChange, VoxelChannel,
-    VoxelChunk, VoxelConcreteEditRequest, VoxelEditAck, VoxelEditBroadcast, VoxelEditReject,
-    VoxelEditRequest, VoxelType,
+    attach_chunk_colliders, ChunkChannel, ChunkDataSync, HomebaseAttestationRequest,
+    HomebaseAttestationResponse, HomebasePayloadScope, HomebasePublicationAttestation, MapChannel,
+    MapInstanceId, MapRegistry, MapSaveTarget, MapSwitchTarget, MapTransitionEnd,
+    MapTransitionReady, MapTransitionStart, Owner, PendingTransition, PlayerMapSwitchRequest,
+    SavedEntity, SavedEntityKind, SectionBlocksUpdate, TransitionReadySent, UnloadColumn,
+    VoxelBrushEditRequest, VoxelChange, VoxelChannel, VoxelChunk, VoxelConcreteEditRequest,
+    VoxelEditAck, VoxelEditBroadcast, VoxelEditReject, VoxelEditRequest, VoxelType,
 };
 pub use terrain::{TerrainDefRegistry, TerrainPlugin};
 pub use transition::{MapTransitionEntity, TransitionPlugin};
@@ -208,6 +208,10 @@ impl Plugin for ProtocolPlugin {
         app.register_message::<MapTransitionReady>()
             .add_direction(NetworkDirection::ClientToServer);
         app.register_message::<MapTransitionEnd>()
+            .add_direction(NetworkDirection::ServerToClient);
+        app.register_message::<HomebaseAttestationRequest>()
+            .add_direction(NetworkDirection::ClientToServer);
+        app.register_message::<HomebaseAttestationResponse>()
             .add_direction(NetworkDirection::ServerToClient);
 
         // Nostr post-connect authentication channel
