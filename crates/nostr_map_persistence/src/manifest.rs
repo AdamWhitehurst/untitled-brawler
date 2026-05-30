@@ -67,6 +67,10 @@ pub struct NostrMapManifest {
     pub payloads: Vec<ManifestPayloadDescriptor>,
     pub schema_version: u32,
     pub descriptor_root: [u8; 32],
+    /// Server-signed authorization for client-published homebase manifests.
+    /// `None` for server-owned overworld manifests and pre-attestation revisions.
+    #[serde(default)]
+    pub homebase_attestation: Option<protocol::HomebasePublicationAttestation>,
 }
 
 /// Stores whether a payload slot is present, intentionally empty, unchanged, or deleted.
@@ -480,6 +484,7 @@ mod tests {
             payloads,
             schema_version: MAP_MANIFEST_SCHEMA_VERSION,
             descriptor_root,
+            homebase_attestation: None,
         }
     }
 

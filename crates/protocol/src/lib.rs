@@ -45,12 +45,13 @@ pub use hit_detection::{
     projectile_collision_layers, terrain_collision_layers, GameLayer,
 };
 pub use map::{
-    attach_chunk_colliders, ChunkChannel, ChunkDataSync, MapChannel, MapInstanceId, MapRegistry,
-    MapSaveTarget, MapSwitchTarget, MapTransitionEnd, MapTransitionReady, MapTransitionStart,
-    Owner, PendingTransition, PlayerMapSwitchRequest, SavedEntity, SavedEntityKind,
-    SectionBlocksUpdate, TransitionReadySent, UnloadColumn, VoxelBrushEditRequest, VoxelChange,
-    VoxelChannel, VoxelChunk, VoxelConcreteEditRequest, VoxelEditAck, VoxelEditBroadcast,
-    VoxelEditReject, VoxelEditRequest, VoxelType,
+    attach_chunk_colliders, ChunkChannel, ChunkDataSync, HomebasePayloadScope,
+    HomebasePublicationAttestation, MapChannel, MapInstanceId, MapRegistry, MapSaveTarget,
+    MapSwitchTarget, MapTransitionEnd, MapTransitionReady, MapTransitionStart, Owner,
+    PendingTransition, PlayerMapSwitchRequest, SavedEntity, SavedEntityKind, SectionBlocksUpdate,
+    TransitionReadySent, UnloadColumn, VoxelBrushEditRequest, VoxelChange, VoxelChannel,
+    VoxelChunk, VoxelConcreteEditRequest, VoxelEditAck, VoxelEditBroadcast, VoxelEditReject,
+    VoxelEditRequest, VoxelType,
 };
 pub use terrain::{TerrainDefRegistry, TerrainPlugin};
 pub use transition::{MapTransitionEntity, TransitionPlugin};

@@ -1,8 +1,17 @@
+pub mod attestation;
 pub mod manifest;
 pub mod policy;
 pub mod publish;
 pub mod read;
 pub mod stores;
+pub mod validation;
+
+pub use attestation::{
+    attestation_signing_payload, sign_homebase_attestation, verify_homebase_attestation,
+    AttestationSigner, AttestationVerifier, HOMEBASE_ATTESTATION_SIGNING_DOMAIN,
+};
+pub use protocol::{HomebasePayloadScope, HomebasePublicationAttestation};
+pub use validation::validate_homebase_manifest_attestation;
 
 pub use manifest::{
     compute_descriptor_root, compute_manifest_hash, manifest_event_draft, manifest_event_tags,
@@ -18,7 +27,8 @@ pub use manifest::{
 pub use nostr_client::BlobRef;
 pub use policy::{ManifestTieBreak, MapPersistencePolicy, NostrMapQueryPolicy};
 pub use publish::{
-    build_signed_map_manifest_event, manifest_hash_from_signed_event_json, MapManifestSigner,
+    build_homebase_manifest_event, build_signed_map_manifest_event,
+    manifest_hash_from_signed_event_json, ClientHomebaseUpdate, MapManifestSigner,
 };
 pub use read::{
     assemble_raw_validated_map_save, download_payloads, fetch_manifest_ancestors,

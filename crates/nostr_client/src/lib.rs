@@ -24,8 +24,9 @@ pub use identity::{
     generate_encrypted_identity, identity_file_path, identity_file_path_in_dir,
     import_encrypted_identity, load_encrypted_identity_from_dir,
     load_nostr_keys_from_env_or_profile, load_nostr_keys_from_profile_dir,
-    npub_from_nostr_public_key, save_encrypted_identity_to_dir, unlock_identity, EncryptedIdentity,
-    IdentityStoreError, LoginError, NostrKeys, SaveEncryptedIdentity, StoredEncryptedIdentity,
+    npub_from_nostr_public_key, save_encrypted_identity_to_dir, unlock_identity,
+    verify_payload_schnorr, EncryptedIdentity, IdentityStoreError, LoginError, NostrKeys,
+    PayloadSignatureError, SaveEncryptedIdentity, StoredEncryptedIdentity,
 };
 pub use plugin::{NostrClientConfig, NostrClientPlugin};
 pub use relay_pool::{relay_pool_ready, RelayPool};

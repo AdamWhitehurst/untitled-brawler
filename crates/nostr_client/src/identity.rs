@@ -1,8 +1,11 @@
 use bevy::prelude::*;
 use nostr_sdk::nips::nip49::EncryptedSecretKey;
+use nostr_sdk::nostr::secp256k1::schnorr::Signature;
+use nostr_sdk::nostr::secp256k1::Message;
 use nostr_sdk::{FromBech32, Keys, PublicKey, SecretKey, ToBech32};
 use protocol::NostrPublicKey;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 pub const ENCRYPTED_IDENTITY_VERSION: u32 = 1;
@@ -19,6 +22,11 @@ pub struct NostrKeys(Keys);
 impl NostrKeys {
     pub fn from_secret(secret: SecretKey) -> Self {
         Self(Keys::new(secret))
+    }
+
+    /// Generates a fresh random identity. Intended for tests and one-off key creation.
+    pub fn generate() -> Self {
+        Self(Keys::generate())
     }
 
     pub fn keys(&self) -> &Keys {
@@ -39,6 +47,51 @@ impl NostrKeys {
     ) -> Result<String, crate::events::NostrEventError> {
         draft.sign_with_keys(&self.0)
     }
+
+    /// Signs arbitrary bytes with a schnorr signature over their SHA-256 digest.
+    ///
+    /// Map-agnostic primitive for signing non-event payloads (e.g. attestations).
+    /// Returns the raw 64-byte signature.
+    pub fn sign_payload_schnorr(&self, payload: &[u8]) -> Vec<u8> {
+        let digest = Sha256::digest(payload);
+        let message = Message::from_digest_slice(&digest)
+            .expect("SHA-256 digest is always 32 bytes for a schnorr message");
+        self.0.sign_schnorr(&message).serialize().to_vec()
+    }
+}
+
+/// Verifies a schnorr signature over the SHA-256 digest of `payload`.
+///
+/// Map-agnostic counterpart to [`NostrKeys::sign_payload_schnorr`].
+pub fn verify_payload_schnorr(
+    pubkey: NostrPublicKey,
+    payload: &[u8],
+    signature: &[u8],
+) -> Result<(), PayloadSignatureError> {
+    let digest = Sha256::digest(payload);
+    let message = Message::from_digest_slice(&digest)
+        .expect("SHA-256 digest is always 32 bytes for a schnorr message");
+    let signature =
+        Signature::from_slice(signature).map_err(|_| PayloadSignatureError::MalformedSignature)?;
+    let public_key =
+        PublicKey::from_slice(&pubkey.0).map_err(|_| PayloadSignatureError::MalformedPublicKey)?;
+    let xonly = public_key
+        .xonly()
+        .map_err(|_| PayloadSignatureError::MalformedPublicKey)?;
+    signature
+        .verify(&message, &xonly)
+        .map_err(|_| PayloadSignatureError::VerificationFailed)
+}
+
+/// Failure verifying a raw schnorr payload signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PayloadSignatureError {
+    #[error("payload signature is not a valid 64-byte schnorr signature")]
+    MalformedSignature,
+    #[error("public key is not a valid x-only public key")]
+    MalformedPublicKey,
+    #[error("payload schnorr signature verification failed")]
+    VerificationFailed,
 }
 
 pub fn client_id_from_public_key(public: &PublicKey) -> u64 {

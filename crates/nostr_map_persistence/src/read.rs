@@ -596,6 +596,7 @@ mod tests {
             payloads,
             schema_version: MAP_MANIFEST_SCHEMA_VERSION,
             descriptor_root,
+            homebase_attestation: None,
         }
     }
 

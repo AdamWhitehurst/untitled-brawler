@@ -463,6 +463,7 @@ pub async fn prepare_server_map_publish_entry(
         payloads: payloads.clone(),
         schema_version: MAP_MANIFEST_SCHEMA_VERSION,
         descriptor_root,
+        homebase_attestation: None,
     };
     let (new_manifest_hash, signed_event_json) = build_signed_map_manifest_event(&signer, manifest)
         .map_err(|error| MapPersistenceRejection::Invalid(error.to_string()))?;

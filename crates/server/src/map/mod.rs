@@ -1,9 +1,11 @@
+pub mod homebase_publication;
 pub mod preflight;
 pub mod preparation;
 pub mod remote_publish;
 pub mod switching;
 pub mod types;
 
+pub use homebase_publication::*;
 pub use preflight::*;
 pub use preparation::*;
 pub use switching::*;
