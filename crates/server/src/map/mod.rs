@@ -984,6 +984,7 @@ impl Plugin for ServerMapPlugin {
             .init_resource::<SaveOpIdAllocator>()
             .init_resource::<remote_publish::PendingPublishBySaveId>()
             .init_resource::<remote_publish::RemoteMapPublishWorker>()
+            .init_resource::<homebase_publication::PendingHomebaseAttestations>()
             .add_message::<remote_publish::MapPayloadSaveCompleted>()
             .add_message::<remote_publish::MapPayloadSaveFailed>()
             .add_systems(
@@ -1017,7 +1018,6 @@ impl Plugin for ServerMapPlugin {
                     push_chunks_to_clients,
                     save_dirty_chunks_debounced,
                     handle_map_switch_requests,
-                    homebase_publication::handle_homebase_attestation_requests,
                     crate::transition::complete_map_transition,
                     protocol::attach_chunk_colliders,
                     crate::chunk_entities::spawn_chunk_entities
@@ -1035,6 +1035,8 @@ impl Plugin for ServerMapPlugin {
             .add_systems(
                 Update,
                 (
+                    homebase_publication::handle_homebase_attestation_requests,
+                    homebase_publication::poll_homebase_attestation_uploads,
                     remote_publish::normalize_chunk_save_completions,
                     remote_publish::handle_completed_map_payload_save_for_publish,
                     remote_publish::prepare_pending_remote_publish_journal_entries

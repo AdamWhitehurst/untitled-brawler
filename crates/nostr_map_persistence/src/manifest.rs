@@ -277,6 +277,17 @@ pub fn canonical_manifest_bytes(
     serde_json::to_vec(manifest).map_err(ManifestVerificationError::CanonicalSerialization)
 }
 
+/// Serializes a manifest to canonical JSON for transport (e.g. an unsigned
+/// homebase manifest the server hands to the owning client to sign).
+pub fn manifest_to_json(manifest: &NostrMapManifest) -> Result<String, ManifestVerificationError> {
+    serde_json::to_string(manifest).map_err(ManifestVerificationError::CanonicalSerialization)
+}
+
+/// Parses a manifest from the JSON produced by [`manifest_to_json`].
+pub fn manifest_from_json(json: &str) -> Result<NostrMapManifest, ManifestVerificationError> {
+    serde_json::from_str(json).map_err(ManifestVerificationError::CanonicalSerialization)
+}
+
 /// Computes a domain-separated manifest hash.
 pub fn compute_manifest_hash(
     manifest: &NostrMapManifest,

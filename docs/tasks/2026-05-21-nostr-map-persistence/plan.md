@@ -3053,6 +3053,29 @@ Add tests proving chunk-entity changes enqueue/publish alongside terrain and pre
 
 Phase 5 removes the temporary Phase 3 Homebase import security exception by requiring server-signed attestation and progression-bearing rejection for accepted Homebase imports.
 
+> **Implementation decision (2026-05-30): "server encodes, client signs".**
+> Investigation during implementation found the client cannot faithfully reproduce
+> the server's on-disk homebase save bytes from replication: `spawn_points`
+> (`RespawnPoint`), map-level `SavedEntity`, and per-chunk `WorldObjectSpawn`
+> chunk-assignment/`persisted_components` are server-only and never replicated, and
+> even terrain palette byte-determinism is not guaranteed. So the original 5.2/5.3
+> client-reconstruction-from-replication design is **superseded** by:
+> 1. Client sends `HomebaseAttestationRequest` (a publish trigger for its own homebase).
+> 2. Server reads its authoritative homebase save, encodes each slot with the shared
+>    `nostr_map_persistence` encoders, uploads the blobs to Blossom, signs the
+>    `HomebasePublicationAttestation`, and assembles an **unsigned** `NostrMapManifest`
+>    (owner = player, embeds the attestation and blob URLs).
+> 3. Server replies `HomebaseAttestationResponse::Granted(unsigned_manifest_json)`.
+> 4. Client deserializes it and signs the manifest event with the **player's** Nostr key
+>    (`build_signed_map_manifest_event`), then publishes it to relays.
+>
+> Consequences: 5.2 (`HomebasePublicationQueue`/`HomebaseReplicaCompleteness`) and 5.3
+> (transition completeness hooks) are **not implemented** as written — the server is the
+> source of truth, so the client tracks no replicated completeness. The server handler is
+> async (blob upload) and gated on the server's remote-publish config. 5.7
+> (progression-bearing-data rejection / entitlements) remains deferred (no progression
+> types exist in the codebase).
+
 ### Changes
 
 #### 1. Homebase attestation type

@@ -3,22 +3,26 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy::prelude::*;
+use bevy::tasks::{IoTaskPool, Task};
 use lightyear::prelude::{MessageReceiver, MessageSender};
-use nostr_client::{verify_payload_schnorr, BlobRef, NostrKeys};
+use nostr_client::{verify_payload_schnorr, BlobRef, BlossomAuth, NostrKeys};
 use nostr_map_persistence::attestation::{
     sign_homebase_attestation, AttestationSigner, AttestationVerifier,
 };
 use nostr_map_persistence::manifest::{ManifestPayloadSlot, PayloadClass, PayloadKey};
 use nostr_map_persistence::{
     compute_descriptor_root, encode_chunk_entities_payload, encode_chunk_payload,
-    encode_map_entities_payload, encode_map_meta_payload, validate_homebase_manifest_attestation,
-    HomebasePayloadScope, HomebasePublicationAttestation, ManifestPayloadDescriptor,
-    MapPersistenceRejection, MapRevision, NostrMapManifest, CHUNK_ENTITIES_SCHEMA_VERSION,
-    MAP_ENTITIES_SCHEMA_VERSION, MAP_META_SCHEMA_VERSION,
+    encode_map_entities_payload, encode_map_meta_payload, manifest_to_json,
+    validate_homebase_manifest_attestation, BlossomBlobPutStore, HomebasePayloadScope,
+    HomebasePublicationAttestation, ManifestPayloadDescriptor, MapPersistenceRejection,
+    MapRevision, NostrMapManifest, CHUNK_ENTITIES_SCHEMA_VERSION, MAP_ENTITIES_SCHEMA_VERSION,
+    MAP_MANIFEST_SCHEMA_VERSION, MAP_META_SCHEMA_VERSION,
 };
-use persistence::Store;
+use persistence::{AsyncStore, Store};
 use protocol::map::{HomebaseAttestationRequest, HomebaseAttestationResponse, MapChannel};
 use protocol::{MapInstanceId, NostrPublicKey, PlayerIdentity};
+
+use super::remote_publish::RemoteMapPublishConfig;
 use sha2::{Digest, Sha256};
 use voxel_map_engine::persistence::fs_chunk::FsChunkStore;
 use voxel_map_engine::persistence::fs_chunk_entities::FsChunkEntitiesStore;
@@ -225,23 +229,37 @@ fn list_saved_chunk_positions(
     Ok(positions)
 }
 
-/// Reads the materialized homebase save from disk and recomputes the authoritative
-/// descriptor root, payload scope, and revision the player's publish must match.
+/// Reads the materialized homebase save from disk, re-encoding each present slot with the
+/// shared payload encoders. Returns the authoritative state (descriptor root, payload scope,
+/// revision) plus the encoded bytes for every present slot so the caller can upload them.
 ///
-/// This is the server's source of truth for attestation: it re-encodes every saved
-/// slot with the shared payload encoders so the root matches a faithful client publish.
-pub fn read_authoritative_homebase_state(
+/// This is the server's source of truth: under the "server encodes, client signs" model the
+/// server, not the client, produces canonical payload bytes, so the descriptor root always
+/// matches the manifest the client signs.
+fn read_authoritative_homebase_publish(
     save_root: &Path,
     owner: NostrPublicKey,
-) -> Result<AuthoritativeHomebaseState, MapPersistenceRejection> {
+) -> Result<
+    (
+        AuthoritativeHomebaseState,
+        Vec<(ManifestPayloadDescriptor, Vec<u8>)>,
+    ),
+    MapPersistenceRejection,
+> {
     let map_id = MapInstanceId::Homebase { owner };
     let canonical_map_dir = map_save_dir(save_root, &map_id);
     let map_dir = store_map_dir_for_loading(&canonical_map_dir)
         .map_err(|e| MapPersistenceRejection::Filesystem(format!("resolve homebase dir: {e}")))?;
     let map_dir_arc = Arc::new(map_dir.clone());
 
-    let mut payloads = Vec::new();
+    let mut present_payloads: Vec<(ManifestPayloadDescriptor, Vec<u8>)> = Vec::new();
     let mut scope = HomebasePayloadScope::default();
+    let mut push_present = |class, key, schema_version, bytes: Vec<u8>| {
+        present_payloads.push((
+            present_descriptor(class, key, schema_version, &bytes),
+            bytes,
+        ));
+    };
 
     let meta = FsMapMetaStore {
         map_dir: map_dir_arc.clone(),
@@ -260,12 +278,12 @@ pub fn read_authoritative_homebase_state(
             meta.generation_version,
             spawn_points,
         )?;
-        payloads.push(present_descriptor(
+        push_present(
             PayloadClass::MapMeta,
             PayloadKey::Singleton,
             MAP_META_SCHEMA_VERSION,
-            &bytes,
-        ));
+            bytes,
+        );
         scope.includes_meta = true;
     }
 
@@ -282,7 +300,7 @@ pub fn read_authoritative_homebase_state(
                 ))
             })?;
         let bytes = encode_chunk_payload(envelope)?;
-        payloads.push(present_descriptor(
+        push_present(
             PayloadClass::TerrainChunk,
             PayloadKey::Chunk {
                 x: chunk_pos.x,
@@ -290,8 +308,8 @@ pub fn read_authoritative_homebase_state(
                 z: chunk_pos.z,
             },
             CHUNK_SAVE_VERSION,
-            &bytes,
-        ));
+            bytes,
+        );
         scope.terrain_chunks.push(chunk_pos);
     }
 
@@ -308,7 +326,7 @@ pub fn read_authoritative_homebase_state(
                 ))
             })?;
         let bytes = encode_chunk_entities_payload(spawns)?;
-        payloads.push(present_descriptor(
+        push_present(
             PayloadClass::ChunkEntities,
             PayloadKey::Chunk {
                 x: chunk_pos.x,
@@ -316,8 +334,8 @@ pub fn read_authoritative_homebase_state(
                 z: chunk_pos.z,
             },
             CHUNK_ENTITIES_SCHEMA_VERSION,
-            &bytes,
-        ));
+            bytes,
+        );
         scope.chunk_entities.push(chunk_pos);
     }
 
@@ -328,16 +346,18 @@ pub fn read_authoritative_homebase_state(
     .map_err(|e| MapPersistenceRejection::Filesystem(format!("load map entities: {e}")))?;
     if let Some(entities) = map_entities {
         let bytes = encode_map_entities_payload(entities)?;
-        payloads.push(present_descriptor(
+        push_present(
             PayloadClass::MapEntities,
             PayloadKey::Singleton,
             MAP_ENTITIES_SCHEMA_VERSION,
-            &bytes,
-        ));
+            bytes,
+        );
         scope.includes_map_entities = true;
     }
 
-    let descriptor_root = compute_descriptor_root(&payloads)
+    let descriptors: Vec<ManifestPayloadDescriptor> =
+        present_payloads.iter().map(|(d, _)| d.clone()).collect();
+    let descriptor_root = compute_descriptor_root(&descriptors)
         .map_err(|e| MapPersistenceRejection::Invalid(format!("descriptor root: {e}")))?;
 
     let accepted_head = FsAcceptedMapHeadStore {
@@ -354,14 +374,23 @@ pub fn read_authoritative_homebase_state(
         None => (0, None),
     };
 
-    Ok(AuthoritativeHomebaseState {
+    let state = AuthoritativeHomebaseState {
         owner,
         map_id,
         server_revision,
         previous_manifest_hash,
         descriptor_root,
         payload_scope: scope,
-    })
+    };
+    Ok((state, present_payloads))
+}
+
+/// Reads authoritative homebase state (descriptor root, payload scope, revision) from disk.
+pub fn read_authoritative_homebase_state(
+    save_root: &Path,
+    owner: NostrPublicKey,
+) -> Result<AuthoritativeHomebaseState, MapPersistenceRejection> {
+    read_authoritative_homebase_publish(save_root, owner).map(|(state, _)| state)
 }
 
 /// Current unix time in seconds for attestation issuance/expiry.
@@ -374,76 +403,195 @@ fn now_unix_seconds() -> Result<u64, MapPersistenceRejection> {
         })
 }
 
-/// Issues server-signed attestations for client homebase publication requests.
+/// In-flight homebase publication preparation tasks, keyed by the requesting client entity.
+#[derive(Resource, Default)]
+pub struct PendingHomebaseAttestations {
+    tasks: Vec<(Entity, Task<HomebaseAttestationResponse>)>,
+}
+
+/// Handles client homebase publication requests under the "server encodes, client signs" model.
 ///
-/// Authoritative homebase state is read back from the materialized filesystem save and
-/// rehashed, so an attestation reflects the last server-side save. The request must match
-/// the read-back descriptor root and payload scope; otherwise it is rejected.
+/// The server reads back its authoritative homebase save, signs an attestation, and spawns an
+/// async task that uploads the payload blobs to Blossom and assembles the unsigned manifest the
+/// client will sign with the player's Nostr key.
 pub fn handle_homebase_attestation_requests(
     mut receivers: Query<(Entity, &mut MessageReceiver<HomebaseAttestationRequest>)>,
     player_identities: Query<&PlayerIdentity>,
     mut responders: Query<&mut MessageSender<HomebaseAttestationResponse>>,
     server_identity: Res<NostrKeys>,
     save_path: Res<WorldSavePath>,
+    publish_config: Res<RemoteMapPublishConfig>,
+    mut pending: ResMut<PendingHomebaseAttestations>,
 ) {
     for (client_entity, mut receiver) in &mut receivers {
-        for request in receiver.receive() {
-            let response = issue_homebase_attestation(
+        for HomebaseAttestationRequest in receiver.receive() {
+            match begin_homebase_publication(
                 client_entity,
-                &request,
                 &player_identities,
                 &server_identity,
                 &save_path.0,
-            );
-            match responders.get_mut(client_entity) {
-                Ok(mut sender) => sender.send::<MapChannel>(response),
-                Err(_) => warn!(
-                    ?client_entity,
-                    "client requesting homebase attestation has no response sender"
-                ),
+                &publish_config,
+            ) {
+                Ok(task) => pending.tasks.push((client_entity, task)),
+                Err(rejection) => {
+                    warn!(
+                        ?client_entity,
+                        ?rejection,
+                        "rejected homebase publication request"
+                    );
+                    reply_attestation(
+                        &mut responders,
+                        client_entity,
+                        HomebaseAttestationResponse::Rejected(format!("{rejection:?}")),
+                    );
+                }
             }
         }
     }
 }
 
-/// Resolves the request to an attestation response, rejecting unauthenticated or mismatched requests.
-fn issue_homebase_attestation(
+/// Drains completed homebase publication tasks and replies to each requesting client.
+pub fn poll_homebase_attestation_uploads(
+    mut pending: ResMut<PendingHomebaseAttestations>,
+    mut responders: Query<&mut MessageSender<HomebaseAttestationResponse>>,
+) {
+    let mut index = 0;
+    while index < pending.tasks.len() {
+        let Some(response) = bevy::tasks::futures::check_ready(&mut pending.tasks[index].1) else {
+            index += 1;
+            continue;
+        };
+        let (client_entity, _) = pending.tasks.swap_remove(index);
+        reply_attestation(&mut responders, client_entity, response);
+    }
+}
+
+fn reply_attestation(
+    responders: &mut Query<&mut MessageSender<HomebaseAttestationResponse>>,
     client_entity: Entity,
-    request: &HomebaseAttestationRequest,
+    response: HomebaseAttestationResponse,
+) {
+    match responders.get_mut(client_entity) {
+        Ok(mut sender) => sender.send::<MapChannel>(response),
+        Err(_) => warn!(
+            ?client_entity,
+            "homebase publication requester has no response sender"
+        ),
+    }
+}
+
+/// Validates the request and starts the async upload, returning the in-flight task.
+fn begin_homebase_publication(
+    client_entity: Entity,
     player_identities: &Query<&PlayerIdentity>,
     server_identity: &NostrKeys,
     save_root: &Path,
-) -> HomebaseAttestationResponse {
-    let Ok(identity) = player_identities.get(client_entity) else {
-        return HomebaseAttestationResponse::Rejected("client is not authenticated".to_string());
-    };
+    publish_config: &RemoteMapPublishConfig,
+) -> Result<Task<HomebaseAttestationResponse>, MapPersistenceRejection> {
+    let identity = player_identities
+        .get(client_entity)
+        .map_err(|_| MapPersistenceRejection::Invalid("client is not authenticated".to_string()))?;
     let owner = identity.0;
     let map_id = MapInstanceId::Homebase { owner };
 
-    let result = read_authoritative_homebase_state(save_root, owner).and_then(|state| {
-        let now_unix = now_unix_seconds()?;
-        verify_homebase_publication_attestation_request(
-            &ServerAttestationSigner(server_identity),
-            owner,
-            &map_id,
-            request.descriptor_root,
-            &request.payload_scope,
-            &state,
-            now_unix,
-            HOMEBASE_ATTESTATION_TTL_SECONDS,
-        )
-    });
-    match result {
-        Ok(attestation) => HomebaseAttestationResponse::Granted(attestation),
-        Err(rejection) => {
-            warn!(
-                ?client_entity,
-                ?rejection,
-                "rejected homebase attestation request"
-            );
-            HomebaseAttestationResponse::Rejected(format!("{rejection:?}"))
-        }
+    if !publish_config.enabled {
+        return Err(MapPersistenceRejection::Unavailable(
+            "server remote map publishing is disabled".to_string(),
+        ));
     }
+    let upload_url = publish_config.blossom_upload_url.clone().ok_or_else(|| {
+        MapPersistenceRejection::Unavailable("server Blossom upload URL not configured".to_string())
+    })?;
+    let base_url = publish_config
+        .blossom_public_base_url
+        .clone()
+        .ok_or_else(|| {
+            MapPersistenceRejection::Unavailable(
+                "server Blossom public base URL not configured".to_string(),
+            )
+        })?;
+
+    let (state, present_payloads) = read_authoritative_homebase_publish(save_root, owner)?;
+    let now_unix = now_unix_seconds()?;
+    let attestation = verify_homebase_publication_attestation_request(
+        &ServerAttestationSigner(server_identity),
+        owner,
+        &map_id,
+        state.descriptor_root,
+        &state.payload_scope,
+        &state,
+        now_unix,
+        HOMEBASE_ATTESTATION_TTL_SECONDS,
+    )?;
+
+    let blob_store = BlossomBlobPutStore {
+        upload_url,
+        auth: BlossomAuth::from_keys(server_identity),
+    };
+    let revision = state.server_revision;
+    let previous_hash = state.previous_manifest_hash;
+    let descriptor_root = state.descriptor_root;
+
+    Ok(IoTaskPool::get().spawn(async move {
+        match upload_and_build_unsigned_manifest(
+            blob_store,
+            base_url,
+            present_payloads,
+            owner,
+            map_id,
+            revision,
+            previous_hash,
+            descriptor_root,
+            attestation,
+        )
+        .await
+        {
+            Ok(json) => HomebaseAttestationResponse::Granted {
+                unsigned_manifest_json: json,
+            },
+            Err(rejection) => HomebaseAttestationResponse::Rejected(format!("{rejection:?}")),
+        }
+    }))
+}
+
+/// Uploads each present payload blob to Blossom, then assembles the unsigned manifest JSON.
+#[allow(clippy::too_many_arguments)]
+async fn upload_and_build_unsigned_manifest(
+    blob_store: BlossomBlobPutStore,
+    base_url: url::Url,
+    present_payloads: Vec<(ManifestPayloadDescriptor, Vec<u8>)>,
+    owner: NostrPublicKey,
+    map_id: MapInstanceId,
+    revision: u64,
+    previous_hash: Option<[u8; 32]>,
+    descriptor_root: [u8; 32],
+    attestation: HomebasePublicationAttestation,
+) -> Result<String, MapPersistenceRejection> {
+    let mut payloads = Vec::with_capacity(present_payloads.len());
+    for (mut descriptor, bytes) in present_payloads {
+        if let ManifestPayloadSlot::Present { blob } = &mut descriptor.slot {
+            let mut get_url = base_url.clone();
+            get_url.set_path(&hex::encode(blob.sha256));
+            blob.urls = vec![get_url.to_string()];
+            blob_store.save(blob, &bytes).await.map_err(|e| {
+                MapPersistenceRejection::Unavailable(format!("upload homebase blob: {e}"))
+            })?;
+        }
+        payloads.push(descriptor);
+    }
+
+    let manifest = NostrMapManifest {
+        map_id,
+        owner,
+        revision,
+        previous_hash,
+        payloads,
+        schema_version: MAP_MANIFEST_SCHEMA_VERSION,
+        descriptor_root,
+        homebase_attestation: Some(attestation),
+    };
+    manifest_to_json(&manifest)
+        .map_err(|e| MapPersistenceRejection::Invalid(format!("serialize unsigned manifest: {e}")))
 }
 
 #[cfg(test)]

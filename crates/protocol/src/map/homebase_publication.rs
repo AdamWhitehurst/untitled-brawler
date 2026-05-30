@@ -31,21 +31,25 @@ pub struct HomebasePayloadScope {
     pub includes_map_entities: bool,
 }
 
-/// Client request asking the server to attest a homebase publication.
+/// Client request asking the server to prepare and authorize a publication of
+/// the player's own homebase.
 ///
 /// The owner is the authenticated player on the connection; the server derives
-/// it rather than trusting a client-supplied identity.
+/// it rather than trusting a client-supplied identity. The client carries no
+/// payload descriptors because it cannot faithfully reproduce the server's
+/// authoritative save bytes; the server reads, encodes, and uploads them itself
+/// (see the Phase 5 "server encodes, client signs" decision).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Message)]
-pub struct HomebaseAttestationRequest {
-    pub descriptor_root: [u8; 32],
-    pub payload_scope: HomebasePayloadScope,
-}
+pub struct HomebaseAttestationRequest;
 
 /// Server reply to a [`HomebaseAttestationRequest`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Message)]
 pub enum HomebaseAttestationResponse {
-    /// The server authorized the publication and signed an attestation.
-    Granted(HomebasePublicationAttestation),
+    /// The server uploaded the homebase payloads and signed an attestation,
+    /// returning the canonical JSON of the unsigned `NostrMapManifest` (which
+    /// embeds the attestation). The client signs this manifest event with the
+    /// player's Nostr key and publishes it.
+    Granted { unsigned_manifest_json: String },
     /// The server refused; the string explains why (diagnostics only).
     Rejected(String),
 }
