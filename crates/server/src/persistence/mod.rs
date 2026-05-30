@@ -800,10 +800,26 @@ pub fn atomically_promote_staged_revision(
     fs::create_dir_all(final_dir.parent().expect("revision dir has parent"))
         .map_err(|e| PersistenceError::Serialize(format!("mkdir revisions: {e}")))?;
     if final_dir.exists() {
-        validate_revision_directory_identity(&final_dir, revision)?;
-        if staging_dir.exists() {
-            fs::remove_dir_all(staging_dir).map_err(|e| {
-                PersistenceError::Serialize(format!("remove duplicate staging dir: {e}"))
+        if existing_revision_dir_is_complete(&final_dir) {
+            // The content-addressed revision is already materialized; drop the duplicate staging.
+            if staging_dir.exists() {
+                fs::remove_dir_all(staging_dir).map_err(|e| {
+                    PersistenceError::Serialize(format!("remove duplicate staging dir: {e}"))
+                })?;
+            }
+        } else {
+            // An incomplete dir at this path (a pre-migration remnant or external tampering)
+            // cannot have come from an atomic promotion. Replace it with the freshly validated
+            // staging, which is content-identical by hash.
+            warn!(
+                ?final_dir,
+                "existing revision directory is incomplete; re-promoting from validated staging"
+            );
+            fs::remove_dir_all(&final_dir).map_err(|e| {
+                PersistenceError::Serialize(format!("remove incomplete revision dir: {e}"))
+            })?;
+            fs::rename(staging_dir, &final_dir).map_err(|e| {
+                PersistenceError::Serialize(format!("re-promote staged revision: {e}"))
             })?;
         }
     } else {
@@ -1095,23 +1111,15 @@ fn write_full_revision_to_staging(
     Ok(())
 }
 
-fn validate_revision_directory_identity(
-    final_dir: &Path,
-    revision: &MapRevision,
-) -> Result<(), PersistenceError> {
-    let accepted = FsAcceptedMapHeadStore {
-        map_dir: Arc::new(final_dir.to_path_buf()),
-    }
-    .load(&())?
-    .ok_or_else(|| {
-        PersistenceError::Deserialize("existing revision missing accepted head".into())
-    })?;
-    if accepted != *revision {
-        return Err(PersistenceError::Deserialize(
-            "existing revision directory has different accepted head".into(),
-        ));
-    }
-    Ok(())
+/// Returns whether an existing revision directory is a complete materialized snapshot.
+///
+/// Revision directories are content-addressed by their name (`rev-{n}-{manifest_hash}`) and
+/// are only ever created by atomically renaming a fully written and validated staging
+/// directory, so a complete snapshot always has readable map metadata. (Heads are mutable
+/// pointers and live at the map's top-level dir, not inside the immutable snapshot.) A dir
+/// missing this marker is a pre-migration remnant or external tampering and is re-promoted.
+fn existing_revision_dir_is_complete(final_dir: &Path) -> bool {
+    final_dir.join("map.meta.bin").is_file()
 }
 
 fn local_head_from_remote_save(save: &ServerValidatedMapSave) -> LocalMapHead {

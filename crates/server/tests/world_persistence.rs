@@ -8,9 +8,9 @@ use server::persistence::fs_map_entities::FsMapEntitiesStore;
 use server::persistence::fs_map_meta::FsMapMetaStore;
 use server::persistence::{
     active_pointer_path, assemble_validated_map_save, cleanup_materialization_staging,
-    map_save_dir, materialize_validated_map_save, store_map_dir_for_loading,
+    map_save_dir, materialize_validated_map_save, revision_dir_name, store_map_dir_for_loading,
     FsAcceptedMapHeadStore, FsLocalMapHeadStore, MapMeta, SaveBase, ServerValidatedMapDelta,
-    ServerValidatedMapSave, STAGING_DIR,
+    ServerValidatedMapSave, REVISIONS_DIR, STAGING_DIR,
 };
 use voxel_map_engine::config::{WorldObjectPositionKind, WorldObjectSpawn};
 use voxel_map_engine::persistence::fs_chunk::FsChunkStore;
@@ -142,6 +142,59 @@ fn remote_save(seed: u64, revision: MapRevision) -> ServerValidatedMapSave {
         }]),
         revision,
     }
+}
+
+#[test]
+fn remote_restore_rematerializing_same_revision_is_idempotent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let map_dir = map_save_dir(tmp.path(), &MapInstanceId::Overworld);
+    let revision = remote_revision(1, 1, None);
+    let save = remote_save(1234, revision.clone());
+
+    materialize_validated_map_save(&map_dir, &save).expect("first materialize");
+    // Re-materializing the same content-addressed revision (e.g. a server restart that
+    // re-selects the same remote head) must succeed. Heads live at the map's top-level dir,
+    // so promotion must not require an accepted-head file inside the revision snapshot.
+    materialize_validated_map_save(&map_dir, &save).expect("second materialize is idempotent");
+
+    let active_dir = store_map_dir_for_loading(&map_dir).expect("active dir");
+    assert_eq!(
+        test_meta_store(&active_dir)
+            .load(&())
+            .unwrap()
+            .unwrap()
+            .seed,
+        1234
+    );
+    assert_eq!(
+        FsAcceptedMapHeadStore {
+            map_dir: Arc::new(map_dir),
+        }
+        .load(&())
+        .unwrap()
+        .unwrap(),
+        revision
+    );
+}
+
+#[test]
+fn remote_restore_self_heals_incomplete_revision_directory() {
+    let tmp = tempfile::tempdir().unwrap();
+    let map_dir = map_save_dir(tmp.path(), &MapInstanceId::Overworld);
+    let revision = remote_revision(1, 1, None);
+    let save = remote_save(1234, revision.clone());
+
+    materialize_validated_map_save(&map_dir, &save).expect("first materialize");
+
+    // Simulate a pre-migration remnant: a revision directory missing the completeness marker.
+    let revision_dir = map_dir
+        .join(REVISIONS_DIR)
+        .join(revision_dir_name(&revision));
+    std::fs::remove_file(revision_dir.join("map.meta.bin")).expect("remove meta marker");
+
+    materialize_validated_map_save(&map_dir, &save).expect("self-heals incomplete revision dir");
+    let active_dir = store_map_dir_for_loading(&map_dir).expect("active dir");
+    assert!(test_meta_store(&active_dir).load(&()).unwrap().is_some());
 }
 
 #[test]
