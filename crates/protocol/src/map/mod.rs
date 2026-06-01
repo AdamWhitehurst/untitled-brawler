@@ -18,7 +18,7 @@ pub use chunk::{ChunkChannel, ChunkDataSync, UnloadColumn};
 pub use colliders::attach_chunk_colliders;
 pub use homebase_publication::{
     HomebaseAttestationRequest, HomebaseAttestationResponse, HomebasePayloadScope,
-    HomebasePublicationAttestation,
+    HomebasePublicationAttestation, HomebasePublished,
 };
 pub use persistence::{MapSaveTarget, SavedEntity, SavedEntityKind};
 pub use transition::{

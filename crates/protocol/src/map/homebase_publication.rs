@@ -25,8 +25,13 @@ pub struct HomebasePublicationAttestation {
 /// publish data the server never validated.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 pub struct HomebasePayloadScope {
-    pub terrain_chunks: Vec<IVec3>,
+    /// Terrain chunks published as `Present` (genuine edits differing from generated terrain).
+    pub edited_chunks: Vec<IVec3>,
+    /// Terrain chunks published as `Tombstoned` (reverted to generated; folds out on restore).
+    pub tombstoned_chunks: Vec<IVec3>,
     pub chunk_entities: Vec<IVec3>,
+    /// Chunk-entity slots published as `Tombstoned`.
+    pub tombstoned_chunk_entities: Vec<IVec3>,
     pub includes_meta: bool,
     pub includes_map_entities: bool,
 }
@@ -49,7 +54,21 @@ pub enum HomebaseAttestationResponse {
     /// returning the canonical JSON of the unsigned `NostrMapManifest` (which
     /// embeds the attestation). The client signs this manifest event with the
     /// player's Nostr key and publishes it.
-    Granted { unsigned_manifest_json: String },
+    ///
+    /// `manifest_hash` identifies the in-flight revision so the client can echo
+    /// it back in [`HomebasePublished`] once the event is on relays.
+    Granted {
+        unsigned_manifest_json: String,
+        manifest_hash: [u8; 32],
+    },
     /// The server refused; the string explains why (diagnostics only).
     Rejected(String),
+}
+
+/// Client -> server: the player published the granted homebase manifest event to relays.
+/// The server uses `manifest_hash` to advance the accepted head and clear the durable
+/// change-set for exactly that in-flight revision.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Message)]
+pub struct HomebasePublished {
+    pub manifest_hash: [u8; 32],
 }

@@ -178,8 +178,9 @@ For manual failure-path testing, add `SERVER_MAP_REMOTE_PUBLISH_FAIL_FIRST=1` to
 
 A player can publish their own Homebase to Nostr. Because the client cannot
 faithfully reproduce the server's authoritative save bytes from replication, the
-flow is "server encodes, client signs": the client presses `F9` to send a
-`HomebaseAttestationRequest`; the server reads back its authoritative Homebase
+flow is "server encodes, client signs": the client presses `F7` (the
+`PublishHomebase` action) to send a `HomebaseAttestationRequest`; the server
+reads back its authoritative Homebase
 save, uploads the payload blobs to Blossom, signs a `HomebasePublicationAttestation`,
 and returns an unsigned `NostrMapManifest`; the client signs that manifest event
 with the **player's** Nostr key and publishes it to relays. Remote import of a

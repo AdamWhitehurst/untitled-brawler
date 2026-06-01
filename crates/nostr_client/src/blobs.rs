@@ -59,6 +59,12 @@ pub enum BlobReadError {
 /// Blossom Nostr authorization event kind from BUD-11.
 pub const NOSTR_KIND_BLOSSOM_AUTH: u16 = 24242;
 
+/// Maximum time to wait for a Blossom blob upload before failing loudly.
+///
+/// Without a bound a stalled upload endpoint hangs the publish task forever, so the
+/// requesting client never receives a response. A timeout turns a stall into an error.
+const BLOB_UPLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Signed BUD-11 Blossom authorization helper.
 #[derive(Clone)]
 pub struct BlossomAuth {
@@ -206,15 +212,26 @@ pub async fn upload_blob(
     let sha256: [u8; 32] = Sha256::digest(&bytes).into();
     let sha256_hex = hex::encode(sha256);
     let token = auth.upload_token(&url, &sha256_hex)?;
-    let response = crate::compat::await_network(
-        reqwest::Client::new()
-            .put(url.clone())
-            .header("Authorization", token.authorization_header)
-            .header("X-SHA-256", sha256_hex.clone())
+    // Build the client and issue the request inside `await_network` so the whole reqwest
+    // operation runs in the Tokio runtime context. A `.timeout()` request registers a Tokio
+    // timer when the send future is constructed, so constructing it outside the context
+    // panics with "no reactor running".
+    let auth_header = token.authorization_header;
+    let sha_header = sha256_hex.clone();
+    let put_url = url.clone();
+    let response = crate::compat::await_network(async move {
+        let client = reqwest::Client::builder()
+            .timeout(BLOB_UPLOAD_TIMEOUT)
+            .build()?;
+        client
+            .put(put_url)
+            .header("Authorization", auth_header)
+            .header("X-SHA-256", sha_header)
             .header("Content-Type", "image/png")
             .body(bytes)
-            .send(),
-    )
+            .send()
+            .await
+    })
     .await
     .map_err(|error| BlobWriteError::Http(error.to_string()))?;
     if !response.status().is_success() {

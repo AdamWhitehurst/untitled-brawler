@@ -9,9 +9,12 @@
 
 use bevy::prelude::*;
 use bevy::tasks::{IoTaskPool, Task};
-use lightyear::prelude::{MessageReceiver, MessageSender};
+use leafwing_input_manager::prelude::ActionState;
+use lightyear::prelude::{Controlled, MessageReceiver, MessageSender};
 use nostr_client::events::NostrEventDraft;
 use nostr_client::{NostrKeys, RelayPool};
+
+use crate::input::raw::RawClientActions;
 use nostr_map_persistence::{
     build_signed_map_manifest_event, manifest_from_json, ManifestHash, MapManifestSigner,
     NostrManifestPublishStore, RemotePersistenceError,
@@ -42,15 +45,21 @@ impl MapManifestSigner for ClientManifestSigner<'_> {
 #[derive(Resource, Default)]
 struct PendingHomebasePublishes(Vec<Task<Result<(), String>>>);
 
-/// Sends a homebase publication request when the player presses the publish key.
+/// Sends a homebase publication request when the player triggers the publish action.
 ///
+/// Reads the leafwing `ActionState` on the controlled player entity (not raw
+/// `ButtonInput`) so input stays under the intended rollback/ownership pipeline.
 /// The request carries no payload: the server derives the owner from the
 /// authenticated connection and publishes that player's own homebase.
-fn request_homebase_publish_on_keypress(
-    keys: Res<ButtonInput<KeyCode>>,
+fn request_homebase_publish(
+    action_query: Query<&ActionState<RawClientActions>, With<Controlled>>,
     mut senders: Query<&mut MessageSender<HomebaseAttestationRequest>>,
 ) {
-    if !keys.just_pressed(KeyCode::F9) {
+    let Ok(action_state) = action_query.single() else {
+        trace!("request_homebase_publish: no controlled raw action state yet");
+        return;
+    };
+    if !action_state.just_pressed(&RawClientActions::PublishHomebase) {
         return;
     }
     let mut requested = false;
@@ -80,6 +89,7 @@ fn handle_homebase_attestation_response(
                 }
                 HomebaseAttestationResponse::Granted {
                     unsigned_manifest_json,
+                    manifest_hash: _,
                 } => match sign_homebase_manifest(&identity, &unsigned_manifest_json) {
                     Ok((manifest_hash, event_json)) => {
                         let store = NostrManifestPublishStore {
@@ -199,7 +209,7 @@ impl Plugin for ClientMapPublicationPlugin {
         app.init_resource::<PendingHomebasePublishes>().add_systems(
             Update,
             (
-                request_homebase_publish_on_keypress.run_if(resource_exists::<NostrKeys>),
+                request_homebase_publish,
                 handle_homebase_attestation_response
                     .run_if(resource_exists::<NostrKeys>.and(resource_exists::<RelayPool>)),
                 poll_homebase_publishes,

@@ -2,12 +2,12 @@ pub mod diagnostics;
 pub mod gameplay;
 pub mod input;
 pub mod map;
+pub mod map_publication;
 pub mod transition;
 pub mod world_object;
 
 use bevy::prelude::*;
 use client::auth::ClientAuthPlugin;
-use client::map_publication::ClientMapPublicationPlugin;
 use client::persistence::fs_encrypted_identity::{nostr_identity_dir, FsEncryptedIdentityStore};
 use client_lightyear::{ClientNetworkConfig, ClientNetworkPlugin};
 use dev::DevPlugin;
@@ -15,6 +15,7 @@ use diagnostics::ClientDiagnosticsPlugin;
 use gameplay::ClientGameplayPlugin;
 use lightyear::prelude::client::*;
 use map::ClientMapPlugin;
+use map_publication::ClientMapPublicationPlugin;
 use nostr_client::{
     EncryptedIdentity, LoginError, NostrClientConfig, NostrClientPlugin, SaveEncryptedIdentity,
     StoredEncryptedIdentity,

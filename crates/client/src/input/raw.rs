@@ -20,6 +20,7 @@ pub enum RawClientActions {
     DevToggleInspector,
     DevToggleWorldInspector,
     DevToggleSpawnPanel,
+    PublishHomebase,
 }
 
 impl Actionlike for RawClientActions {
@@ -52,4 +53,5 @@ pub fn raw_client_input_map() -> InputMap<RawClientActions> {
         .with(RawClientActions::DevToggleInspector, KeyCode::F4)
         .with(RawClientActions::DevToggleWorldInspector, KeyCode::F5)
         .with(RawClientActions::DevToggleSpawnPanel, KeyCode::F6)
+        .with(RawClientActions::PublishHomebase, KeyCode::F7)
 }

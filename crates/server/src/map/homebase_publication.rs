@@ -11,8 +11,8 @@ use nostr_map_persistence::attestation::{
 };
 use nostr_map_persistence::manifest::{ManifestPayloadSlot, PayloadClass, PayloadKey};
 use nostr_map_persistence::{
-    compute_descriptor_root, encode_chunk_entities_payload, encode_chunk_payload,
-    encode_map_entities_payload, encode_map_meta_payload, manifest_to_json,
+    compute_descriptor_root, compute_manifest_hash, encode_chunk_entities_payload,
+    encode_chunk_payload, encode_map_entities_payload, encode_map_meta_payload, manifest_to_json,
     validate_homebase_manifest_attestation, BlossomBlobPutStore, HomebasePayloadScope,
     HomebasePublicationAttestation, ManifestPayloadDescriptor, MapPersistenceRejection,
     MapRevision, NostrMapManifest, CHUNK_ENTITIES_SCHEMA_VERSION, MAP_ENTITIES_SCHEMA_VERSION,
@@ -310,7 +310,7 @@ fn read_authoritative_homebase_publish(
             CHUNK_SAVE_VERSION,
             bytes,
         );
-        scope.terrain_chunks.push(chunk_pos);
+        scope.edited_chunks.push(chunk_pos);
     }
 
     let chunk_entities_store = FsChunkEntitiesStore {
@@ -546,8 +546,9 @@ fn begin_homebase_publication(
         )
         .await
         {
-            Ok(json) => HomebaseAttestationResponse::Granted {
+            Ok((json, manifest_hash)) => HomebaseAttestationResponse::Granted {
                 unsigned_manifest_json: json,
+                manifest_hash,
             },
             Err(rejection) => HomebaseAttestationResponse::Rejected(format!("{rejection:?}")),
         }
@@ -566,7 +567,7 @@ async fn upload_and_build_unsigned_manifest(
     previous_hash: Option<[u8; 32]>,
     descriptor_root: [u8; 32],
     attestation: HomebasePublicationAttestation,
-) -> Result<String, MapPersistenceRejection> {
+) -> Result<(String, [u8; 32]), MapPersistenceRejection> {
     let mut payloads = Vec::with_capacity(present_payloads.len());
     for (mut descriptor, bytes) in present_payloads {
         if let ManifestPayloadSlot::Present { blob } = &mut descriptor.slot {
@@ -590,8 +591,12 @@ async fn upload_and_build_unsigned_manifest(
         descriptor_root,
         homebase_attestation: Some(attestation),
     };
-    manifest_to_json(&manifest)
-        .map_err(|e| MapPersistenceRejection::Invalid(format!("serialize unsigned manifest: {e}")))
+    let manifest_hash = compute_manifest_hash(&manifest)
+        .map_err(|e| MapPersistenceRejection::Invalid(format!("hash unsigned manifest: {e}")))?;
+    let json = manifest_to_json(&manifest).map_err(|e| {
+        MapPersistenceRejection::Invalid(format!("serialize unsigned manifest: {e}"))
+    })?;
+    Ok((json, manifest_hash))
 }
 
 #[cfg(test)]
@@ -737,7 +742,7 @@ mod tests {
 
         let state = read_authoritative_homebase_state(dir.path(), owner).expect("read state");
         assert!(state.payload_scope.includes_meta);
-        assert!(state.payload_scope.terrain_chunks.is_empty());
+        assert!(state.payload_scope.edited_chunks.is_empty());
         assert_eq!(state.server_revision, 0);
 
         let keys = server_keys();

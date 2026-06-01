@@ -46,12 +46,13 @@ pub use hit_detection::{
 };
 pub use map::{
     attach_chunk_colliders, ChunkChannel, ChunkDataSync, HomebaseAttestationRequest,
-    HomebaseAttestationResponse, HomebasePayloadScope, HomebasePublicationAttestation, MapChannel,
-    MapInstanceId, MapRegistry, MapSaveTarget, MapSwitchTarget, MapTransitionEnd,
-    MapTransitionReady, MapTransitionStart, Owner, PendingTransition, PlayerMapSwitchRequest,
-    SavedEntity, SavedEntityKind, SectionBlocksUpdate, TransitionReadySent, UnloadColumn,
-    VoxelBrushEditRequest, VoxelChange, VoxelChannel, VoxelChunk, VoxelConcreteEditRequest,
-    VoxelEditAck, VoxelEditBroadcast, VoxelEditReject, VoxelEditRequest, VoxelType,
+    HomebaseAttestationResponse, HomebasePayloadScope, HomebasePublicationAttestation,
+    HomebasePublished, MapChannel, MapInstanceId, MapRegistry, MapSaveTarget, MapSwitchTarget,
+    MapTransitionEnd, MapTransitionReady, MapTransitionStart, Owner, PendingTransition,
+    PlayerMapSwitchRequest, SavedEntity, SavedEntityKind, SectionBlocksUpdate, TransitionReadySent,
+    UnloadColumn, VoxelBrushEditRequest, VoxelChange, VoxelChannel, VoxelChunk,
+    VoxelConcreteEditRequest, VoxelEditAck, VoxelEditBroadcast, VoxelEditReject, VoxelEditRequest,
+    VoxelType,
 };
 pub use terrain::{TerrainDefRegistry, TerrainPlugin};
 pub use transition::{MapTransitionEntity, TransitionPlugin};
@@ -213,6 +214,8 @@ impl Plugin for ProtocolPlugin {
             .add_direction(NetworkDirection::ClientToServer);
         app.register_message::<HomebaseAttestationResponse>()
             .add_direction(NetworkDirection::ServerToClient);
+        app.register_message::<HomebasePublished>()
+            .add_direction(NetworkDirection::ClientToServer);
 
         // Nostr post-connect authentication channel
         app.add_channel::<AuthChannel>(ChannelSettings {
