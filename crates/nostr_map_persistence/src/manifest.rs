@@ -544,14 +544,22 @@ mod tests {
             ManifestPayloadDescriptor {
                 class: PayloadClass::MapMeta,
                 key: PayloadKey::Singleton,
-                slot: ManifestPayloadSlot::Present { blob: blob(b"meta") },
+                slot: ManifestPayloadSlot::Present {
+                    blob: blob(b"meta"),
+                },
                 schema_version: 1,
             },
         ];
 
-        let finalized =
-            finalize_manifest(payloads.clone(), MapInstanceId::Overworld, owner, 7, None, None)
-                .unwrap();
+        let finalized = finalize_manifest(
+            payloads.clone(),
+            MapInstanceId::Overworld,
+            owner,
+            7,
+            None,
+            None,
+        )
+        .unwrap();
 
         let mut expected_payloads = payloads;
         expected_payloads.sort_by_key(manifest_payload_descriptor_order);
