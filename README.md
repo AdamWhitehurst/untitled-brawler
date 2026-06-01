@@ -180,12 +180,16 @@ A player can publish their own Homebase to Nostr. Because the client cannot
 faithfully reproduce the server's authoritative save bytes from replication, the
 flow is "server encodes, client signs": the client presses `F7` (the
 `PublishHomebase` action) to send a `HomebaseAttestationRequest`; the server
-reads back its authoritative Homebase
-save, uploads the payload blobs to Blossom, signs a `HomebasePublicationAttestation`,
-and returns an unsigned `NostrMapManifest`; the client signs that manifest event
-with the **player's** Nostr key and publishes it to relays. Remote import of a
-Homebase manifest is accepted only if it carries a valid player signature and a
-valid server attestation (the temporary Phase 3 insecure import path is removed).
+classifies the durable change-set of edited chunks against freshly-generated
+terrain — chunks that still differ are uploaded to Blossom as `Present`, chunks
+reverted to generated terrain become `Tombstoned` (and their local files are
+deleted so they regenerate from seed) — chains the delta onto the accepted head,
+signs a `HomebasePublicationAttestation`, and returns an unsigned
+`NostrMapManifest`; the client signs that manifest event with the **player's**
+Nostr key and publishes it to relays. Each publish is a small chained delta of
+genuine edits, not a full snapshot. Remote import of a Homebase manifest is
+accepted only if it carries a valid player signature and a valid server
+attestation (the temporary Phase 3 insecure import path is removed).
 
 Homebase publication requires the same server remote-publish configuration as the
 Overworld (`SERVER_MAP_REMOTE_PUBLISH=1` with the `SERVER_BLOSSOM_*`, `SERVER_NSEC`,
