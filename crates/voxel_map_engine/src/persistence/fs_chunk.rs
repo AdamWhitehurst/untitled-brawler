@@ -6,7 +6,7 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use persistence::{PersistenceError, Store};
 
-use super::{chunk_file_path, ChunkFileEnvelope, CHUNK_SAVE_VERSION, ZSTD_COMPRESSION_LEVEL};
+use super::{CHUNK_SAVE_VERSION, ChunkFileEnvelope, ZSTD_COMPRESSION_LEVEL, chunk_file_path};
 
 /// Filesystem-backed store for chunk terrain data.
 ///
@@ -68,5 +68,61 @@ impl Store<IVec3, ChunkFileEnvelope> for FsChunkStore {
         }
 
         Ok(Some(envelope))
+    }
+}
+
+impl FsChunkStore {
+    /// Removes a chunk's on-disk file so the chunk regenerates from seed on next load.
+    /// Absent file is a no-op (the desired end state already holds).
+    pub fn delete(&self, key: &IVec3) -> Result<(), PersistenceError> {
+        let path = chunk_file_path(&self.map_dir, *key);
+        if !path.exists() {
+            trace!(?path, "chunk file already absent; delete is a no-op");
+            return Ok(());
+        }
+        fs::remove_file(&path)
+            .map_err(|e| PersistenceError::Serialize(format!("delete chunk {key}: {e}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{ChunkData, ChunkStatus, WorldVoxel};
+
+    const PADDED_VOLUME_16: usize = 18 * 18 * 18;
+
+    fn test_store(dir: &std::path::Path) -> FsChunkStore {
+        FsChunkStore {
+            map_dir: Arc::new(dir.to_path_buf()),
+        }
+    }
+
+    fn test_envelope() -> ChunkFileEnvelope {
+        let voxels = vec![WorldVoxel::Air; PADDED_VOLUME_16];
+        ChunkFileEnvelope {
+            version: CHUNK_SAVE_VERSION,
+            chunk_size: 16,
+            data: ChunkData::from_voxels(&voxels, ChunkStatus::Full),
+        }
+    }
+
+    #[test]
+    fn delete_removes_saved_chunk_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = test_store(dir.path());
+        let pos = IVec3::new(1, -2, 3);
+        store.save(&pos, &test_envelope()).unwrap();
+        assert!(chunk_file_path(dir.path(), pos).exists());
+
+        store.delete(&pos).unwrap();
+        assert!(!chunk_file_path(dir.path(), pos).exists());
+    }
+
+    #[test]
+    fn delete_absent_chunk_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = test_store(dir.path());
+        assert!(store.delete(&IVec3::ZERO).is_ok());
     }
 }

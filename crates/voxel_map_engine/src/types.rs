@@ -89,6 +89,20 @@ impl ChunkData {
         }
     }
 
+    /// Returns whether this chunk's padded voxel buffer is element-wise identical to `voxels`.
+    /// A length mismatch returns `false` (cannot be equal) with a `trace!`.
+    pub fn matches_voxels(&self, voxels: &[WorldVoxel]) -> bool {
+        if self.voxels.len() != voxels.len() {
+            trace!(
+                stored = self.voxels.len(),
+                other = voxels.len(),
+                "chunk voxel length mismatch; not equal to generated"
+            );
+            return false;
+        }
+        (0..voxels.len()).all(|i| self.voxels.get(i) == voxels[i])
+    }
+
     /// Construct from a flat voxel array (generation output).
     pub fn from_voxels(voxels: &[WorldVoxel], status: ChunkStatus) -> Self {
         let fill_type = classify_fill_type(voxels);
