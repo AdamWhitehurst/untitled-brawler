@@ -13,7 +13,9 @@ use voxel_map_engine::prelude::{Homebase, MapDimensions, VoxelMapConfig};
 
 use crate::persistence::fs_map_entities::FsMapEntitiesStore;
 use crate::persistence::fs_map_meta::FsMapMetaStore;
-use crate::persistence::{map_save_dir, store_map_dir_for_loading, MapMeta, WorldSavePath};
+use crate::persistence::{
+    map_save_dir, store_map_dir_for_loading, FsMapChangeSetStore, MapMeta, WorldSavePath,
+};
 
 use super::{MapLoadState, MapPreparation, MapTransitionParams};
 
@@ -110,6 +112,10 @@ pub fn spawn_homebase_preflight_placeholder_with_stores(
             PendingStoreOps::<IVec3, Vec<WorldObjectSpawn>>::default(),
             StoreBackend::new(FsChunkStore { map_dir }),
             PendingStoreOps::<IVec3, ChunkFileEnvelope>::default(),
+            // Change-set spans revisions, so root it at the top-level map dir.
+            StoreBackend::new(FsMapChangeSetStore {
+                map_dir: Arc::new(canonical_map_dir),
+            }),
         ))
         .id()
 }

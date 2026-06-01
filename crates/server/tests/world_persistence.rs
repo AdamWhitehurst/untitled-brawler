@@ -9,8 +9,8 @@ use server::persistence::fs_map_meta::FsMapMetaStore;
 use server::persistence::{
     active_pointer_path, assemble_validated_map_save, cleanup_materialization_staging,
     map_save_dir, materialize_validated_map_save, revision_dir_name, store_map_dir_for_loading,
-    FsAcceptedMapHeadStore, FsLocalMapHeadStore, MapMeta, SaveBase, ServerValidatedMapDelta,
-    ServerValidatedMapSave, REVISIONS_DIR, STAGING_DIR,
+    FsAcceptedMapHeadStore, FsLocalMapHeadStore, FsMapChangeSetStore, MapChangeSet, MapMeta,
+    SaveBase, ServerValidatedMapDelta, ServerValidatedMapSave, REVISIONS_DIR, STAGING_DIR,
 };
 use voxel_map_engine::config::{WorldObjectPositionKind, WorldObjectSpawn};
 use voxel_map_engine::persistence::fs_chunk::FsChunkStore;
@@ -795,4 +795,68 @@ fn entities_and_chunks_coexist_in_map_directory() {
         .unwrap()
         .expect("chunk exists");
     assert_eq!(loaded_chunk.data.voxels.get(0), WorldVoxel::Solid(1));
+}
+
+fn test_change_set_store(dir: &std::path::Path) -> FsMapChangeSetStore {
+    FsMapChangeSetStore {
+        map_dir: Arc::new(dir.to_path_buf()),
+    }
+}
+
+#[test]
+fn change_set_persists_and_reloads() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = test_change_set_store(dir.path());
+
+    let mut change_set = MapChangeSet::default();
+    change_set.chunk_candidates.insert(IVec3::new(1, 0, -2));
+    change_set.chunk_candidates.insert(IVec3::new(3, 4, 5));
+    change_set.map_entities_changed = true;
+    store.save(&(), &change_set).unwrap();
+
+    let loaded = store.load(&()).unwrap().expect("change set exists");
+    assert_eq!(loaded, change_set);
+}
+
+#[test]
+fn change_set_accumulates_across_save_cycles() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = test_change_set_store(dir.path());
+
+    // First cycle: edits to two chunks.
+    let mut cycle_one = store.load(&()).unwrap().unwrap_or_default();
+    cycle_one.chunk_candidates.insert(IVec3::new(0, 0, 0));
+    cycle_one.chunk_candidates.insert(IVec3::new(1, 0, 0));
+    store.save(&(), &cycle_one).unwrap();
+
+    // Second cycle: one repeat, one new chunk — should union, not replace.
+    let mut cycle_two = store.load(&()).unwrap().unwrap_or_default();
+    cycle_two.chunk_candidates.insert(IVec3::new(1, 0, 0));
+    cycle_two.chunk_candidates.insert(IVec3::new(2, 0, 0));
+    store.save(&(), &cycle_two).unwrap();
+
+    let loaded = store.load(&()).unwrap().expect("change set exists");
+    assert_eq!(loaded.chunk_candidates.len(), 3);
+    for pos in [
+        IVec3::new(0, 0, 0),
+        IVec3::new(1, 0, 0),
+        IVec3::new(2, 0, 0),
+    ] {
+        assert!(loaded.chunk_candidates.contains(&pos), "missing {pos}");
+    }
+}
+
+#[test]
+fn change_set_empty_cycle_leaves_it_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = test_change_set_store(dir.path());
+
+    let mut initial = MapChangeSet::default();
+    initial.chunk_candidates.insert(IVec3::new(7, 7, 7));
+    store.save(&(), &initial).unwrap();
+
+    // An empty save cycle (no content_dirty, no entity changes) performs no save, so the
+    // persisted set is untouched.
+    let loaded = store.load(&()).unwrap().expect("change set exists");
+    assert_eq!(loaded, initial);
 }

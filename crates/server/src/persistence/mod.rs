@@ -369,6 +369,58 @@ impl FsLocalMapHeadStore {
     }
 }
 
+/// Durable set of chunk keys edited since the accepted-head revision, plus meta/entity change
+/// flags. This is the publish candidate set; it survives restart so prior-session edits still
+/// publish. Cleared (set-difference) once a revision carrying those keys is durably accepted.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MapChangeSet {
+    pub chunk_candidates: std::collections::HashSet<IVec3>,
+    pub meta_changed: bool,
+    pub map_entities_changed: bool,
+}
+
+/// Filesystem store for the durable map change-set. Rooted at the map's top-level dir alongside
+/// `accepted_head.bin`/`local_head.bin` so it spans revisions.
+#[derive(Clone, Debug)]
+pub struct FsMapChangeSetStore {
+    pub map_dir: Arc<PathBuf>,
+}
+
+impl Store<(), MapChangeSet> for FsMapChangeSetStore {
+    fn load(&self, _key: &()) -> Result<Option<MapChangeSet>, PersistenceError> {
+        let path = self.path();
+        if !path.exists() {
+            trace!(?path, "map change-set file is absent");
+            return Ok(None);
+        }
+        let bytes = fs::read(&path)
+            .map_err(|e| PersistenceError::Deserialize(format!("read change set: {e}")))?;
+        let change_set = bincode::deserialize(&bytes)
+            .map_err(|e| PersistenceError::Deserialize(format!("deserialize change set: {e}")))?;
+        Ok(Some(change_set))
+    }
+
+    fn save(&self, _key: &(), value: &MapChangeSet) -> Result<(), PersistenceError> {
+        let path = self.path();
+        fs::create_dir_all(path.parent().expect("change set path has parent"))
+            .map_err(|e| PersistenceError::Serialize(format!("mkdir change set parent: {e}")))?;
+        let bytes = bincode::serialize(value)
+            .map_err(|e| PersistenceError::Serialize(format!("serialize change set: {e}")))?;
+        let tmp_path = path.with_extension("bin.tmp");
+        fs::write(&tmp_path, bytes)
+            .map_err(|e| PersistenceError::Serialize(format!("write change set tmp: {e}")))?;
+        fs::rename(&tmp_path, &path)
+            .map_err(|e| PersistenceError::Serialize(format!("rename change set: {e}")))?;
+        Ok(())
+    }
+}
+
+impl FsMapChangeSetStore {
+    pub fn path(&self) -> PathBuf {
+        self.map_dir.join("change_set.bin")
+    }
+}
+
 /// Remote manifest publish lifecycle state persisted per map.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RemotePublishStatus {

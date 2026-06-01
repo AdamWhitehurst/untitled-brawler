@@ -41,8 +41,9 @@ use crate::persistence::fs_map_entities::FsMapEntitiesStore;
 use crate::persistence::fs_map_meta::FsMapMetaStore;
 use crate::persistence::{
     map_save_dir, store_map_dir_for_loading, FsAcceptedMapHeadStore, FsLocalMapHeadStore,
-    FsLocalUnpublishedPublishDraftStore, FsRemotePublishJournalStore, LocalMapHead, MapMeta,
-    RemoteMapPersistenceConfig, RemotePublishJournal, ServerMapPublishDraft, WorldSavePath,
+    FsLocalUnpublishedPublishDraftStore, FsMapChangeSetStore, FsRemotePublishJournalStore,
+    LocalMapHead, MapChangeSet, MapMeta, RemoteMapPersistenceConfig, RemotePublishJournal,
+    ServerMapPublishDraft, WorldSavePath,
 };
 use persistence::{PendingStoreOps, SaveOpIdAllocator, StoreBackend};
 use protocol::map::{ChunkEntityRef, MapSaveTarget, SavedEntity, SavedEntityKind};
@@ -251,6 +252,10 @@ fn init_overworld_entity(
         map_dir: head_dir.clone(),
     };
     let local_head_store = FsLocalMapHeadStore { map_dir: head_dir };
+    // The change-set spans revisions like the heads, so root it at the top-level map dir.
+    let change_set_store = FsMapChangeSetStore {
+        map_dir: Arc::new(canonical_map_dir.clone()),
+    };
     let draft_store = FsLocalUnpublishedPublishDraftStore {
         map_dir: map_dir.clone(),
     };
@@ -316,6 +321,7 @@ fn init_overworld_entity(
     map_commands.insert((
         StoreBackend::new(accepted_head_store),
         StoreBackend::new(local_head_store),
+        StoreBackend::new(change_set_store),
         StoreBackend::new(draft_store),
         StoreBackend::new(journal_store),
         journal,
@@ -563,6 +569,7 @@ fn save_dirty_chunks_debounced(
         &mut PendingStoreOps<(), MapMeta>,
         &StoreBackend<(), Vec<SavedEntity>, FsMapEntitiesStore>,
         &mut PendingStoreOps<(), Vec<SavedEntity>>,
+        &StoreBackend<(), MapChangeSet, FsMapChangeSetStore>,
         Option<&StoreBackend<(), LocalMapHead, FsLocalMapHeadStore>>,
         Option<&RemotePublishJournal>,
         Option<&remote_publish::PendingRemotePublishDeltas>,
@@ -605,6 +612,7 @@ fn save_dirty_chunks_debounced(
         mut meta_ops,
         entity_store,
         mut entity_ops,
+        change_set_store,
         local_head_store,
         publish_journal,
         pending_deltas,
@@ -618,6 +626,20 @@ fn save_dirty_chunks_debounced(
         let saved_chunks = enqueue_dirty_chunks(&mut instance, &mut pending_saves, None);
         let content_dirty: HashSet<IVec3> = instance.content_dirty_chunks.drain().collect();
         let entities_dirty = dirty_state.entities_dirty.remove(map_id);
+
+        // Accumulate genuine edits into the durable change-set (the publish candidate set). It
+        // survives restart, so prior-session edits still publish across an F7 gap.
+        if !content_dirty.is_empty() || entities_dirty {
+            let mut change_set = persistence::Store::load(&change_set_store.0, &())
+                .expect("map change-set should load during debounced save")
+                .unwrap_or_default();
+            change_set
+                .chunk_candidates
+                .extend(content_dirty.iter().copied());
+            change_set.map_entities_changed |= entities_dirty;
+            persistence::Store::save(&change_set_store.0, &(), &change_set)
+                .expect("map change-set should persist during debounced save");
+        }
 
         let spawn_points: Vec<Vec3> = respawn_query
             .iter()
