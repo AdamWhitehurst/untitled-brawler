@@ -2,8 +2,6 @@
 name: web-search-researcher
 description: Do you find yourself desiring information that you don't quite feel well-trained (confident) on? Looking for information that is modern and potentially only discoverable on the web? Use the web-search-researcher to find any and all answers to your questions! It will research deeply to figure out and attempt to answer your questions!
 tools: WebSearch, WebFetch, TodoWrite, Read, Grep, Glob, LS
-model: openai-codex/gpt-5.5
-fallbackModels: openai-codex/gpt-5.4, openai-codex/gpt-5.3-codex, anthropic/claude-sonnet-4.6, kimi-coding/kimi-for-coding
 thinking: medium
 systemPromptMode: replace
 inheritProjectContext: true
@@ -43,23 +41,27 @@ When you receive a research query, you will:
 ## Search Strategies
 
 ### For Engine/Library Documentation:
+
 - Search for official docs first: "[engine/library name] official documentation [specific feature]"
 - Look for changelog or release notes for version-specific information
 - Find code examples in official repositories, game development tutorials, or community showcases
 
 ### For Best Practices:
+
 - Search for recent articles (include year in search when relevant)
 - Look for content from recognized experts or organizations
 - Cross-reference multiple sources to identify consensus
 - Search for both "best practices" and "anti-patterns" to get full picture
 
 ### For Technical Solutions:
+
 - Use specific error messages or technical terms in quotes
 - Search Stack Overflow and technical forums for real-world solutions
 - Look for GitHub issues and discussions in relevant repositories
 - Find blog posts describing similar implementations
 
 ### For Comparisons:
+
 - Search for "X vs Y" comparisons
 - Look for migration guides between technologies
 - Find benchmarks and performance comparisons
