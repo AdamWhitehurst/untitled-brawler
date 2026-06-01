@@ -1027,6 +1027,7 @@ impl Plugin for ServerMapPlugin {
             .init_resource::<remote_publish::PendingPublishBySaveId>()
             .init_resource::<remote_publish::RemoteMapPublishWorker>()
             .init_resource::<homebase_publication::PendingHomebaseAttestations>()
+            .init_resource::<homebase_publication::InFlightHomebasePublishes>()
             .add_message::<remote_publish::MapPayloadSaveCompleted>()
             .add_message::<remote_publish::MapPayloadSaveFailed>()
             .add_systems(
@@ -1079,6 +1080,7 @@ impl Plugin for ServerMapPlugin {
                 (
                     homebase_publication::handle_homebase_attestation_requests,
                     homebase_publication::poll_homebase_attestation_uploads,
+                    homebase_publication::handle_homebase_published,
                     remote_publish::normalize_chunk_save_completions,
                     remote_publish::handle_completed_map_payload_save_for_publish,
                     remote_publish::prepare_pending_remote_publish_journal_entries

@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,13 +15,14 @@ use nostr_map_persistence::{
     compute_descriptor_root, compute_manifest_hash, encode_chunk_entities_payload,
     encode_chunk_payload, encode_map_entities_payload, encode_map_meta_payload, finalize_manifest,
     manifest_to_json, validate_homebase_manifest_attestation, BlossomBlobPutStore,
-    HomebasePayloadScope, HomebasePublicationAttestation, ManifestPayloadDescriptor,
+    HomebasePayloadScope, HomebasePublicationAttestation, ManifestHash, ManifestPayloadDescriptor,
     MapPersistenceRejection, MapRevision, NostrMapManifest, CHUNK_ENTITIES_SCHEMA_VERSION,
     MAP_ENTITIES_SCHEMA_VERSION, MAP_META_SCHEMA_VERSION,
 };
 use persistence::{AsyncStore, Store, StoreBackend};
 use protocol::map::{
-    HomebaseAttestationRequest, HomebaseAttestationResponse, MapChannel, SavedEntity,
+    HomebaseAttestationRequest, HomebaseAttestationResponse, HomebasePublished, MapChannel,
+    SavedEntity,
 };
 use protocol::{MapInstanceId, NostrPublicKey, PlayerIdentity};
 
@@ -367,10 +369,43 @@ fn now_unix_seconds() -> Result<u64, MapPersistenceRejection> {
         })
 }
 
-/// In-flight homebase publication preparation tasks, keyed by the requesting client entity.
+/// What one in-flight homebase publish carried, snapshotted at build time so the client's
+/// confirmation can clear exactly those keys from the durable change-set. `published_chunks`
+/// holds the terrain keys actually published (edited + tombstoned), not every candidate, so a
+/// candidate that was skipped (e.g. not loaded) survives for the next publish.
+struct HomebasePublishSnapshot {
+    map_id: MapInstanceId,
+    revision: u64,
+    previous_hash: Option<ManifestHash>,
+    published_chunks: HashSet<IVec3>,
+    published_entity_chunks: HashSet<IVec3>,
+    published_meta: bool,
+    published_map_entities: bool,
+}
+
+/// An in-flight homebase publish awaiting client confirmation, keyed by manifest hash.
+pub struct InFlightHomebasePublish {
+    pub map_id: MapInstanceId,
+    pub revision: MapRevision,
+    published_chunks: HashSet<IVec3>,
+    published_entity_chunks: HashSet<IVec3>,
+    published_meta: bool,
+    published_map_entities: bool,
+}
+
+/// Homebase publishes granted but not yet confirmed published by the client, keyed by the
+/// manifest hash the client echoes back in [`HomebasePublished`].
+#[derive(Resource, Default)]
+pub struct InFlightHomebasePublishes(pub HashMap<ManifestHash, InFlightHomebasePublish>);
+
+/// In-flight homebase publication preparation tasks plus the publish snapshot for each.
 #[derive(Resource, Default)]
 pub struct PendingHomebaseAttestations {
-    tasks: Vec<(Entity, Task<HomebaseAttestationResponse>)>,
+    tasks: Vec<(
+        Entity,
+        HomebasePublishSnapshot,
+        Task<HomebaseAttestationResponse>,
+    )>,
 }
 
 /// Per-map components a homebase publish reads: the live voxel state + generator (for the
@@ -417,7 +452,7 @@ pub fn handle_homebase_attestation_requests(
                 &save_path.0,
                 &publish_config,
             ) {
-                Ok(task) => pending.tasks.push((client_entity, task)),
+                Ok((snapshot, task)) => pending.tasks.push((client_entity, snapshot, task)),
                 Err(rejection) => {
                     warn!(
                         ?client_entity,
@@ -435,18 +470,37 @@ pub fn handle_homebase_attestation_requests(
     }
 }
 
-/// Drains completed homebase publication tasks and replies to each requesting client.
+/// Drains completed homebase publication tasks, records the granted publish as in-flight (keyed
+/// by manifest hash, awaiting client confirmation), and replies to each requesting client.
 pub fn poll_homebase_attestation_uploads(
     mut pending: ResMut<PendingHomebaseAttestations>,
+    mut in_flight: ResMut<InFlightHomebasePublishes>,
     mut responders: Query<&mut MessageSender<HomebaseAttestationResponse>>,
 ) {
     let mut index = 0;
     while index < pending.tasks.len() {
-        let Some(response) = bevy::tasks::futures::check_ready(&mut pending.tasks[index].1) else {
+        let Some(response) = bevy::tasks::futures::check_ready(&mut pending.tasks[index].2) else {
             index += 1;
             continue;
         };
-        let (client_entity, _) = pending.tasks.swap_remove(index);
+        let (client_entity, snapshot, _) = pending.tasks.swap_remove(index);
+        if let HomebaseAttestationResponse::Granted { manifest_hash, .. } = &response {
+            in_flight.0.insert(
+                *manifest_hash,
+                InFlightHomebasePublish {
+                    map_id: snapshot.map_id,
+                    revision: MapRevision {
+                        revision: snapshot.revision,
+                        previous_hash: snapshot.previous_hash,
+                        manifest_hash: *manifest_hash,
+                    },
+                    published_chunks: snapshot.published_chunks,
+                    published_entity_chunks: snapshot.published_entity_chunks,
+                    published_meta: snapshot.published_meta,
+                    published_map_entities: snapshot.published_map_entities,
+                },
+            );
+        }
         reply_attestation(&mut responders, client_entity, response);
     }
 }
@@ -465,6 +519,105 @@ fn reply_attestation(
     }
 }
 
+/// Removes the keys a confirmed publish carried from the durable change-set. Candidates edited
+/// after the build snapshot (absent from the published sets) are preserved.
+fn apply_publish_confirmation_to_change_set(
+    change_set: &mut MapChangeSet,
+    publish: &InFlightHomebasePublish,
+) {
+    for pos in &publish.published_chunks {
+        change_set.chunk_candidates.remove(pos);
+    }
+    for pos in &publish.published_entity_chunks {
+        change_set.chunk_entity_candidates.remove(pos);
+    }
+    if publish.published_meta {
+        change_set.meta_changed = false;
+    }
+    if publish.published_map_entities {
+        change_set.map_entities_changed = false;
+    }
+}
+
+/// On client confirmation that the granted homebase manifest reached relays, advance the accepted
+/// head to the published revision and clear exactly the published keys from the durable
+/// change-set. Self-healing: if no confirmation arrives, the head stays put and the next F7
+/// republishes the same keys as a fresh chained delta.
+pub fn handle_homebase_published(
+    mut receivers: Query<(Entity, &mut MessageReceiver<HomebasePublished>)>,
+    player_identities: Query<&PlayerIdentity>,
+    mut in_flight: ResMut<InFlightHomebasePublishes>,
+    homebase_change_sets: Query<
+        (
+            &MapInstanceId,
+            &StoreBackend<(), MapChangeSet, FsMapChangeSetStore>,
+        ),
+        With<Homebase>,
+    >,
+    save_path: Res<WorldSavePath>,
+) {
+    for (client_entity, mut receiver) in &mut receivers {
+        for HomebasePublished { manifest_hash } in receiver.receive() {
+            let Ok(identity) = player_identities.get(client_entity) else {
+                warn!(
+                    ?client_entity,
+                    "homebase publish confirmation from unauthenticated client; ignoring"
+                );
+                continue;
+            };
+            let map_id = MapInstanceId::Homebase { owner: identity.0 };
+
+            let Some(publish) = in_flight.0.remove(&manifest_hash) else {
+                warn!("unknown or stale homebase publish confirmation; ignoring");
+                continue;
+            };
+            if publish.map_id != map_id {
+                warn!(
+                    ?client_entity,
+                    "homebase publish confirmation owner does not match the in-flight publish; ignoring"
+                );
+                continue;
+            }
+
+            // Heads live at the map's top-level dir, not as a component on the homebase entity.
+            let canonical_map_dir = map_save_dir(&save_path.0, &map_id);
+            if let Err(error) = (FsAcceptedMapHeadStore {
+                map_dir: Arc::new(canonical_map_dir),
+            })
+            .save(&(), &publish.revision)
+            {
+                error!(
+                    ?error,
+                    "failed to advance homebase accepted head on confirmation"
+                );
+                continue;
+            }
+
+            let Some((_, change_backend)) =
+                homebase_change_sets.iter().find(|(mid, _)| **mid == map_id)
+            else {
+                warn!(
+                    ?map_id,
+                    "homebase map is not loaded; cannot clear change-set on confirmation"
+                );
+                continue;
+            };
+            let mut change_set = Store::load(&change_backend.0, &())
+                .expect("change-set should load on homebase publish confirmation")
+                .unwrap_or_default();
+            apply_publish_confirmation_to_change_set(&mut change_set, &publish);
+            Store::save(&change_backend.0, &(), &change_set)
+                .expect("change-set should persist on homebase publish confirmation");
+
+            info!(
+                ?map_id,
+                revision = publish.revision.revision,
+                "homebase publish confirmed; advanced accepted head and cleared change-set"
+            );
+        }
+    }
+}
+
 /// Validates the request, classifies the change-set against the live homebase map, signs the
 /// attestation, and starts the async upload, returning the in-flight task.
 fn begin_homebase_publication(
@@ -474,7 +627,7 @@ fn begin_homebase_publication(
     server_identity: &NostrKeys,
     save_root: &Path,
     publish_config: &RemoteMapPublishConfig,
-) -> Result<Task<HomebaseAttestationResponse>, MapPersistenceRejection> {
+) -> Result<(HomebasePublishSnapshot, Task<HomebaseAttestationResponse>), MapPersistenceRejection> {
     let identity = player_identities
         .get(client_entity)
         .map_err(|_| MapPersistenceRejection::Invalid("client is not authenticated".to_string()))?;
@@ -583,7 +736,24 @@ fn begin_homebase_publication(
         auth: BlossomAuth::from_keys(server_identity),
     };
 
-    Ok(IoTaskPool::get().spawn(async move {
+    // Snapshot exactly the keys this manifest published, so the confirmation clears only those
+    // and candidates edited after this point survive for the next publish.
+    let snapshot = HomebasePublishSnapshot {
+        map_id: map_id.clone(),
+        revision: server_revision,
+        previous_hash: previous_manifest_hash,
+        published_chunks: scope
+            .edited_chunks
+            .iter()
+            .chain(scope.tombstoned_chunks.iter())
+            .copied()
+            .collect(),
+        published_entity_chunks: scope.chunk_entities.iter().copied().collect(),
+        published_meta: scope.includes_meta,
+        published_map_entities: scope.includes_map_entities,
+    };
+
+    let task = IoTaskPool::get().spawn(async move {
         match upload_and_build_unsigned_manifest(
             blob_store,
             base_url,
@@ -604,7 +774,8 @@ fn begin_homebase_publication(
             },
             Err(rejection) => HomebaseAttestationResponse::Rejected(format!("{rejection:?}")),
         }
-    }))
+    });
+    Ok((snapshot, task))
 }
 
 /// Uploads each present payload blob to Blossom, appends the tombstone descriptors, then
@@ -875,6 +1046,50 @@ mod tests {
             ManifestPayloadSlot::Present { .. }
         ));
         assert_eq!(slots.scope.edited_chunks, vec![pos]);
+    }
+
+    #[test]
+    fn confirmation_clears_published_keys_and_preserves_later_edits() {
+        let owner = NostrPublicKey([7; 32]);
+        let mut change_set = MapChangeSet::default();
+        change_set.chunk_candidates.extend([
+            IVec3::new(1, 0, 0),
+            IVec3::new(2, 0, 0),
+            IVec3::new(3, 0, 0), // edited after the build snapshot
+        ]);
+        change_set
+            .chunk_entity_candidates
+            .extend([IVec3::new(4, 0, 0), IVec3::new(5, 0, 0)]);
+        change_set.meta_changed = true;
+        change_set.map_entities_changed = true;
+
+        let publish = InFlightHomebasePublish {
+            map_id: MapInstanceId::Homebase { owner },
+            revision: MapRevision {
+                revision: 0,
+                previous_hash: None,
+                manifest_hash: [1; 32],
+            },
+            published_chunks: HashSet::from([IVec3::new(1, 0, 0), IVec3::new(2, 0, 0)]),
+            published_entity_chunks: HashSet::from([IVec3::new(4, 0, 0)]),
+            published_meta: true,
+            published_map_entities: false,
+        };
+
+        apply_publish_confirmation_to_change_set(&mut change_set, &publish);
+
+        // Published keys removed; keys edited after the snapshot survive.
+        assert_eq!(
+            change_set.chunk_candidates,
+            HashSet::from([IVec3::new(3, 0, 0)])
+        );
+        assert_eq!(
+            change_set.chunk_entity_candidates,
+            HashSet::from([IVec3::new(5, 0, 0)])
+        );
+        // Published flag cleared; an un-published flag is preserved.
+        assert!(!change_set.meta_changed);
+        assert!(change_set.map_entities_changed);
     }
 
     #[test]

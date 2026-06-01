@@ -20,7 +20,9 @@ use nostr_map_persistence::{
     NostrManifestPublishStore, RemotePersistenceError,
 };
 use persistence::AsyncStore;
-use protocol::map::{HomebaseAttestationRequest, HomebaseAttestationResponse, MapChannel};
+use protocol::map::{
+    HomebaseAttestationRequest, HomebaseAttestationResponse, HomebasePublished, MapChannel,
+};
 use protocol::NostrPublicKey;
 
 /// Signs homebase manifest events with the player's Nostr identity.
@@ -41,9 +43,10 @@ impl MapManifestSigner for ClientManifestSigner<'_> {
     }
 }
 
-/// In-flight relay publication tasks for signed homebase manifests.
+/// In-flight relay publication tasks for signed homebase manifests, each tagged with the server's
+/// manifest hash to echo back as confirmation once the event reaches relays.
 #[derive(Resource, Default)]
-struct PendingHomebasePublishes(Vec<Task<Result<(), String>>>);
+struct PendingHomebasePublishes(Vec<(ManifestHash, Task<Result<(), String>>)>);
 
 /// Sends a homebase publication request when the player triggers the publish action.
 ///
@@ -89,18 +92,23 @@ fn handle_homebase_attestation_response(
                 }
                 HomebaseAttestationResponse::Granted {
                     unsigned_manifest_json,
-                    manifest_hash: _,
+                    manifest_hash,
                 } => match sign_homebase_manifest(&identity, &unsigned_manifest_json) {
-                    Ok((manifest_hash, event_json)) => {
+                    Ok((signed_hash, event_json)) => {
                         let store = NostrManifestPublishStore {
                             client: relay_pool.event_client(),
                         };
-                        pending.0.push(IoTaskPool::get().spawn(async move {
-                            store
-                                .save(&manifest_hash, &event_json)
-                                .await
-                                .map_err(|error| error.to_string())
-                        }));
+                        // Echo the server's manifest hash (not the locally recomputed one) so the
+                        // confirmation matches the server's in-flight record exactly.
+                        pending.0.push((
+                            manifest_hash,
+                            IoTaskPool::get().spawn(async move {
+                                store
+                                    .save(&signed_hash, &event_json)
+                                    .await
+                                    .map_err(|error| error.to_string())
+                            }),
+                        ));
                         info!("signed homebase manifest; publishing to relays");
                     }
                     Err(error) => warn!(%error, "failed to sign homebase manifest"),
@@ -120,17 +128,26 @@ fn sign_homebase_manifest(
         .map_err(|error| error.to_string())
 }
 
-/// Drains completed relay publications and logs their outcome.
-fn poll_homebase_publishes(mut pending: ResMut<PendingHomebasePublishes>) {
+/// Drains completed relay publications; on success, confirms to the server so it advances the
+/// accepted head and clears the change-set.
+fn poll_homebase_publishes(
+    mut pending: ResMut<PendingHomebasePublishes>,
+    mut confirmers: Query<&mut MessageSender<HomebasePublished>>,
+) {
     let mut index = 0;
     while index < pending.0.len() {
-        let Some(result) = bevy::tasks::futures::check_ready(&mut pending.0[index]) else {
+        let Some(result) = bevy::tasks::futures::check_ready(&mut pending.0[index].1) else {
             index += 1;
             continue;
         };
-        let _ = pending.0.swap_remove(index);
+        let (manifest_hash, _) = pending.0.swap_remove(index);
         match result {
-            Ok(()) => info!("published homebase manifest to relays"),
+            Ok(()) => {
+                info!("published homebase manifest to relays; confirming to server");
+                for mut sender in &mut confirmers {
+                    sender.send::<MapChannel>(HomebasePublished { manifest_hash });
+                }
+            }
             Err(error) => error!(%error, "failed to publish homebase manifest"),
         }
     }
