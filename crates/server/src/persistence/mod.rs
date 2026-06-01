@@ -375,6 +375,8 @@ impl FsLocalMapHeadStore {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MapChangeSet {
     pub chunk_candidates: std::collections::HashSet<IVec3>,
+    /// Chunk positions whose per-chunk world objects changed since the accepted head.
+    pub chunk_entity_candidates: std::collections::HashSet<IVec3>,
     pub meta_changed: bool,
     pub map_entities_changed: bool,
 }

@@ -11,11 +11,12 @@ use nostr_map_persistence::attestation::{
 };
 use nostr_map_persistence::manifest::{ManifestPayloadSlot, PayloadClass, PayloadKey};
 use nostr_map_persistence::{
-    compute_descriptor_root, compute_manifest_hash, encode_chunk_payload,
-    encode_map_entities_payload, encode_map_meta_payload, finalize_manifest, manifest_to_json,
-    validate_homebase_manifest_attestation, BlossomBlobPutStore, HomebasePayloadScope,
-    HomebasePublicationAttestation, ManifestPayloadDescriptor, MapPersistenceRejection,
-    MapRevision, NostrMapManifest, MAP_ENTITIES_SCHEMA_VERSION, MAP_META_SCHEMA_VERSION,
+    compute_descriptor_root, compute_manifest_hash, encode_chunk_entities_payload,
+    encode_chunk_payload, encode_map_entities_payload, encode_map_meta_payload, finalize_manifest,
+    manifest_to_json, validate_homebase_manifest_attestation, BlossomBlobPutStore,
+    HomebasePayloadScope, HomebasePublicationAttestation, ManifestPayloadDescriptor,
+    MapPersistenceRejection, MapRevision, NostrMapManifest, CHUNK_ENTITIES_SCHEMA_VERSION,
+    MAP_ENTITIES_SCHEMA_VERSION, MAP_META_SCHEMA_VERSION,
 };
 use persistence::{AsyncStore, Store, StoreBackend};
 use protocol::map::{
@@ -25,8 +26,9 @@ use protocol::{MapInstanceId, NostrPublicKey, PlayerIdentity};
 
 use super::remote_publish::RemoteMapPublishConfig;
 use sha2::{Digest, Sha256};
-use voxel_map_engine::config::VoxelGeneratorImpl;
+use voxel_map_engine::config::{VoxelGeneratorImpl, WorldObjectSpawn};
 use voxel_map_engine::persistence::fs_chunk::FsChunkStore;
+use voxel_map_engine::persistence::fs_chunk_entities::FsChunkEntitiesStore;
 use voxel_map_engine::persistence::{ChunkFileEnvelope, CHUNK_SAVE_VERSION};
 use voxel_map_engine::prelude::{Homebase, VoxelGenerator, VoxelMapInstance};
 
@@ -210,10 +212,12 @@ struct HomebasePublishSlots {
 ///
 /// Per-chunk entity slots are not driven by the change-set (it tracks only terrain candidates +
 /// meta/map-entity flags), so they are not published here.
+#[allow(clippy::too_many_arguments)]
 fn resolve_homebase_publish_slots(
     instance: &VoxelMapInstance,
     generator: &dyn VoxelGeneratorImpl,
     chunk_store: &FsChunkStore,
+    chunk_entities_store: &FsChunkEntitiesStore,
     meta_store: &FsMapMetaStore,
     map_entities_store: &FsMapEntitiesStore,
     change_set: &MapChangeSet,
@@ -294,6 +298,39 @@ fn resolve_homebase_publish_slots(
         scope.edited_chunks.push(pos);
     }
 
+    // Per-chunk world objects publish as Present(current list, possibly empty); an emptied chunk
+    // stays empty on restore. They are never tombstoned (that would regenerate generated objects).
+    let mut entity_candidates: Vec<IVec3> =
+        change_set.chunk_entity_candidates.iter().copied().collect();
+    entity_candidates.sort_by_key(|pos| (pos.x, pos.y, pos.z));
+    for pos in entity_candidates {
+        let Some(spawns) = chunk_entities_store.load(&pos).map_err(|e| {
+            MapPersistenceRejection::Filesystem(format!("load chunk entities {pos}: {e}"))
+        })?
+        else {
+            trace!(
+                ?pos,
+                "chunk-entity candidate has no persisted file yet; skipping"
+            );
+            continue;
+        };
+        let bytes = encode_chunk_entities_payload(spawns)?;
+        present_payloads.push((
+            present_descriptor(
+                PayloadClass::ChunkEntities,
+                PayloadKey::Chunk {
+                    x: pos.x,
+                    y: pos.y,
+                    z: pos.z,
+                },
+                CHUNK_ENTITIES_SCHEMA_VERSION,
+                &bytes,
+            ),
+            bytes,
+        ));
+        scope.chunk_entities.push(pos);
+    }
+
     if is_genesis || change_set.map_entities_changed {
         if let Some(entities) = map_entities_store
             .load(&())
@@ -346,6 +383,7 @@ type HomebasePublishQuery<'w, 's> = Query<
         &'static VoxelMapInstance,
         &'static VoxelGenerator,
         &'static StoreBackend<IVec3, ChunkFileEnvelope, FsChunkStore>,
+        &'static StoreBackend<IVec3, Vec<WorldObjectSpawn>, FsChunkEntitiesStore>,
         &'static StoreBackend<(), MapMeta, FsMapMetaStore>,
         &'static StoreBackend<(), Vec<SavedEntity>, FsMapEntitiesStore>,
         &'static StoreBackend<(), MapChangeSet, FsMapChangeSetStore>,
@@ -460,15 +498,23 @@ fn begin_homebase_publication(
             )
         })?;
 
-    let (_, instance, generator, chunk_backend, meta_backend, map_entities_backend, change_backend) =
-        homebase_maps
-            .iter()
-            .find(|(mid, ..)| **mid == map_id)
-            .ok_or_else(|| {
-                MapPersistenceRejection::Unavailable(
-                    "homebase map is not loaded for publish".to_string(),
-                )
-            })?;
+    let (
+        _,
+        instance,
+        generator,
+        chunk_backend,
+        chunk_entities_backend,
+        meta_backend,
+        map_entities_backend,
+        change_backend,
+    ) = homebase_maps
+        .iter()
+        .find(|(mid, ..)| **mid == map_id)
+        .ok_or_else(|| {
+            MapPersistenceRejection::Unavailable(
+                "homebase map is not loaded for publish".to_string(),
+            )
+        })?;
 
     // Accepted head lives at the map's top-level dir; read it to chain this delta.
     let canonical_map_dir = map_save_dir(save_root, &map_id);
@@ -499,6 +545,7 @@ fn begin_homebase_publication(
         instance,
         generator.0.as_ref(),
         &chunk_backend.0,
+        &chunk_entities_backend.0,
         &meta_backend.0,
         &map_entities_backend.0,
         &change_set,
@@ -707,6 +754,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    use voxel_map_engine::config::WorldObjectPositionKind;
     use voxel_map_engine::prelude::{ChunkData, ChunkStatus, WorldVoxel};
 
     const PADDED_VOLUME_16: usize = 18 * 18 * 18;
@@ -721,6 +769,12 @@ mod tests {
 
     fn test_chunk_store(dir: &std::path::Path) -> FsChunkStore {
         FsChunkStore {
+            map_dir: Arc::new(dir.to_path_buf()),
+        }
+    }
+
+    fn test_chunk_entities_store(dir: &std::path::Path) -> FsChunkEntitiesStore {
+        FsChunkEntitiesStore {
             map_dir: Arc::new(dir.to_path_buf()),
         }
     }
@@ -774,6 +828,7 @@ mod tests {
             &instance,
             &AirGenerator,
             &chunk_store,
+            &test_chunk_entities_store(dir.path()),
             &test_meta_store(dir.path()),
             &test_map_entities_store(dir.path()),
             &change_set_for(pos),
@@ -801,6 +856,7 @@ mod tests {
             &instance,
             &AirGenerator,
             &test_chunk_store(dir.path()),
+            &test_chunk_entities_store(dir.path()),
             &test_meta_store(dir.path()),
             &test_map_entities_store(dir.path()),
             &change_set_for(pos),
@@ -822,6 +878,48 @@ mod tests {
     }
 
     #[test]
+    fn resolve_presents_chunk_entity_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let pos = IVec3::new(3, 0, 1);
+        let instance = VoxelMapInstance::new(5, 16); // no terrain candidate
+        let entities_store = test_chunk_entities_store(dir.path());
+        entities_store
+            .save(
+                &pos,
+                &vec![WorldObjectSpawn {
+                    object_id: "tree_oak".to_string(),
+                    position: Vec3::new(1.0, 2.0, 3.0),
+                    position_kind: WorldObjectPositionKind::Final,
+                    persisted_components: Vec::new(),
+                }],
+            )
+            .unwrap();
+
+        let mut change_set = MapChangeSet::default();
+        change_set.chunk_entity_candidates.insert(pos);
+
+        let slots = resolve_homebase_publish_slots(
+            &instance,
+            &AirGenerator,
+            &test_chunk_store(dir.path()),
+            &entities_store,
+            &test_meta_store(dir.path()),
+            &test_map_entities_store(dir.path()),
+            &change_set,
+            false,
+        )
+        .expect("resolve");
+
+        assert!(slots.tombstoned.is_empty());
+        assert_eq!(slots.present_payloads.len(), 1);
+        assert_eq!(
+            slots.present_payloads[0].0.class,
+            PayloadClass::ChunkEntities
+        );
+        assert_eq!(slots.scope.chunk_entities, vec![pos]);
+    }
+
+    #[test]
     fn descriptor_root_covers_tombstones() {
         let dir = tempfile::tempdir().unwrap();
         let pos = IVec3::new(2, 0, 0);
@@ -832,6 +930,7 @@ mod tests {
             &instance,
             &AirGenerator,
             &chunk_store,
+            &test_chunk_entities_store(dir.path()),
             &test_meta_store(dir.path()),
             &test_map_entities_store(dir.path()),
             &change_set_for(pos),

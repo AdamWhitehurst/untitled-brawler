@@ -110,6 +110,9 @@ pub struct WorldDirtyState {
     pub first_dirty_time: Option<f64>,
     /// Maps whose saved entities changed since the last save; drives the entity publish slot.
     pub entities_dirty: HashSet<MapInstanceId>,
+    /// Per-map chunk positions whose per-chunk world objects changed since the last save; drained
+    /// into the durable change-set as chunk-entity publish candidates.
+    pub chunk_entities_dirty: HashMap<MapInstanceId, HashSet<IVec3>>,
 }
 
 impl Default for WorldDirtyState {
@@ -119,6 +122,7 @@ impl Default for WorldDirtyState {
             last_edit_time: 0.0,
             first_dirty_time: None,
             entities_dirty: HashSet::new(),
+            chunk_entities_dirty: HashMap::new(),
         }
     }
 }
@@ -137,6 +141,15 @@ impl WorldDirtyState {
     pub fn mark_entities_dirty(&mut self, map_id: &MapInstanceId, now: f64) {
         self.mark_dirty(now);
         self.entities_dirty.insert(map_id.clone());
+    }
+
+    /// Records that a chunk's per-chunk world objects changed and schedules a save.
+    pub fn mark_chunk_entity_dirty(&mut self, map_id: &MapInstanceId, chunk_pos: IVec3, now: f64) {
+        self.mark_dirty(now);
+        self.chunk_entities_dirty
+            .entry(map_id.clone())
+            .or_default()
+            .insert(chunk_pos);
     }
 }
 
@@ -626,16 +639,23 @@ fn save_dirty_chunks_debounced(
         let saved_chunks = enqueue_dirty_chunks(&mut instance, &mut pending_saves, None);
         let content_dirty: HashSet<IVec3> = instance.content_dirty_chunks.drain().collect();
         let entities_dirty = dirty_state.entities_dirty.remove(map_id);
+        let chunk_entities_dirty = dirty_state
+            .chunk_entities_dirty
+            .remove(map_id)
+            .unwrap_or_default();
 
         // Accumulate genuine edits into the durable change-set (the publish candidate set). It
         // survives restart, so prior-session edits still publish across an F7 gap.
-        if !content_dirty.is_empty() || entities_dirty {
+        if !content_dirty.is_empty() || entities_dirty || !chunk_entities_dirty.is_empty() {
             let mut change_set = persistence::Store::load(&change_set_store.0, &())
                 .expect("map change-set should load during debounced save")
                 .unwrap_or_default();
             change_set
                 .chunk_candidates
                 .extend(content_dirty.iter().copied());
+            change_set
+                .chunk_entity_candidates
+                .extend(chunk_entities_dirty.iter().copied());
             change_set.map_entities_changed |= entities_dirty;
             persistence::Store::save(&change_set_store.0, &(), &change_set)
                 .expect("map change-set should persist during debounced save");
@@ -1202,7 +1222,7 @@ pub fn handle_world_object_placement_requests(
                 .expect("resolved map entity must have VoxelMapInstance and MapDimensions");
 
             match validate_world_object_placement(&request, instance, dimensions, &defs) {
-                Ok((def, final_position, _)) => {
+                Ok((def, final_position, placement_chunk)) => {
                     crate::world_object::spawn_placed_world_object(
                         &mut commands,
                         request.object_id.clone(),
@@ -1225,7 +1245,9 @@ pub fn handle_world_object_placement_requests(
                         },
                         &mut ack_senders,
                     );
-                    dirty_state.mark_entities_dirty(&map_id, time.elapsed_secs_f64());
+                    let now = time.elapsed_secs_f64();
+                    dirty_state.mark_entities_dirty(&map_id, now);
+                    dirty_state.mark_chunk_entity_dirty(&map_id, placement_chunk, now);
                 }
                 Err(reason) => {
                     trace!(
@@ -1389,7 +1411,9 @@ pub fn handle_world_object_delete_requests(
                         },
                         &mut ack_senders,
                     );
-                    dirty_state.mark_entities_dirty(&map_id, time.elapsed_secs_f64());
+                    let now = time.elapsed_secs_f64();
+                    dirty_state.mark_entities_dirty(&map_id, now);
+                    dirty_state.mark_chunk_entity_dirty(&map_id, validated.chunk_pos, now);
                 }
                 Err(reason) => {
                     send_world_object_edit_reject(
@@ -1541,7 +1565,10 @@ pub fn handle_world_object_move_requests(
                         },
                         &mut ack_senders,
                     );
-                    dirty_state.mark_entities_dirty(&map_id, time.elapsed_secs_f64());
+                    let now = time.elapsed_secs_f64();
+                    dirty_state.mark_entities_dirty(&map_id, now);
+                    dirty_state.mark_chunk_entity_dirty(&map_id, validated.old_chunk_pos, now);
+                    dirty_state.mark_chunk_entity_dirty(&map_id, validated.new_chunk_pos, now);
                 }
                 Err(reason) => {
                     send_world_object_edit_reject(
@@ -1607,6 +1634,8 @@ pub fn handle_world_object_rotate_requests(
         &StoreBackend<IVec3, Vec<WorldObjectSpawn>, FsChunkEntitiesStore>,
         &mut PendingStoreOps<IVec3, Vec<WorldObjectSpawn>>,
     )>,
+    mut dirty_state: ResMut<WorldDirtyState>,
+    time: Res<Time>,
     mut commands: Commands,
 ) {
     for (client_entity, mut receiver) in &mut receivers {
@@ -1655,6 +1684,11 @@ pub fn handle_world_object_rotate_requests(
                             rotation,
                         },
                         &mut ack_senders,
+                    );
+                    dirty_state.mark_chunk_entity_dirty(
+                        &map_id,
+                        chunk_ref.chunk_pos,
+                        time.elapsed_secs_f64(),
                     );
                 }
                 Err(reason) => {

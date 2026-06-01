@@ -183,7 +183,9 @@ flow is "server encodes, client signs": the client presses `F7` (the
 classifies the durable change-set of edited chunks against freshly-generated
 terrain — chunks that still differ are uploaded to Blossom as `Present`, chunks
 reverted to generated terrain become `Tombstoned` (and their local files are
-deleted so they regenerate from seed) — chains the delta onto the accepted head,
+deleted so they regenerate from seed). Chunks whose per-chunk world objects were
+placed/removed/moved/rotated are published the same way (their current object
+list, `Present`). The server chains the delta onto the accepted head,
 signs a `HomebasePublicationAttestation`, and returns an unsigned
 `NostrMapManifest`; the client signs that manifest event with the **player's**
 Nostr key and publishes it to relays. Each publish is a small chained delta of

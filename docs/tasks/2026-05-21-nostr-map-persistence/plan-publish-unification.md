@@ -34,6 +34,18 @@ fi
   per-slot helper plus a new `finalize_manifest`** (sort + descriptor_root + assemble) — same
   outcome (shared assembly, bespoke homebase loop deleted), less surface area.
 
+### Addendum — chunk-entity change tracking (added after Phase 5)
+
+The design's `MapChangeSet` tracked only terrain `chunk_candidates` + meta/map-entity flags, so
+Phase 5 initially dropped per-chunk world-object publishing. Per a follow-up requirement,
+`MapChangeSet` gained `chunk_entity_candidates: HashSet<IVec3>`, populated from a new
+`WorldDirtyState::chunk_entities_dirty` set marked at the four world-object mutation sites
+(place/delete/move/rotate) and drained in `save_dirty_chunks_debounced`. Homebase publish emits
+each candidate's current object list as `Present(ChunkEntities)` (never tombstoned — that would
+regenerate generated objects; an emptied chunk publishes an empty list). **Phase 6 must clear
+`chunk_entity_candidates` on confirmation, and Phase 7 must source the overworld draft's
+`chunk_entities` from these candidates** (overworld currently publishes none).
+
 ---
 
 ## Phase 1: Engine primitives (equals-generated + chunk delete)
