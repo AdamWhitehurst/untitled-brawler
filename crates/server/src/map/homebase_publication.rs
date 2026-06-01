@@ -11,27 +11,29 @@ use nostr_map_persistence::attestation::{
 };
 use nostr_map_persistence::manifest::{ManifestPayloadSlot, PayloadClass, PayloadKey};
 use nostr_map_persistence::{
-    compute_descriptor_root, compute_manifest_hash, encode_chunk_entities_payload,
-    encode_chunk_payload, encode_map_entities_payload, encode_map_meta_payload, manifest_to_json,
+    compute_descriptor_root, compute_manifest_hash, encode_chunk_payload,
+    encode_map_entities_payload, encode_map_meta_payload, finalize_manifest, manifest_to_json,
     validate_homebase_manifest_attestation, BlossomBlobPutStore, HomebasePayloadScope,
     HomebasePublicationAttestation, ManifestPayloadDescriptor, MapPersistenceRejection,
-    MapRevision, NostrMapManifest, CHUNK_ENTITIES_SCHEMA_VERSION, MAP_ENTITIES_SCHEMA_VERSION,
-    MAP_MANIFEST_SCHEMA_VERSION, MAP_META_SCHEMA_VERSION,
+    MapRevision, NostrMapManifest, MAP_ENTITIES_SCHEMA_VERSION, MAP_META_SCHEMA_VERSION,
 };
-use persistence::{AsyncStore, Store};
-use protocol::map::{HomebaseAttestationRequest, HomebaseAttestationResponse, MapChannel};
+use persistence::{AsyncStore, Store, StoreBackend};
+use protocol::map::{
+    HomebaseAttestationRequest, HomebaseAttestationResponse, MapChannel, SavedEntity,
+};
 use protocol::{MapInstanceId, NostrPublicKey, PlayerIdentity};
 
 use super::remote_publish::RemoteMapPublishConfig;
 use sha2::{Digest, Sha256};
+use voxel_map_engine::config::VoxelGeneratorImpl;
 use voxel_map_engine::persistence::fs_chunk::FsChunkStore;
-use voxel_map_engine::persistence::fs_chunk_entities::FsChunkEntitiesStore;
 use voxel_map_engine::persistence::{ChunkFileEnvelope, CHUNK_SAVE_VERSION};
+use voxel_map_engine::prelude::{Homebase, VoxelGenerator, VoxelMapInstance};
 
 use crate::persistence::fs_map_entities::FsMapEntitiesStore;
 use crate::persistence::fs_map_meta::FsMapMetaStore;
 use crate::persistence::{
-    map_save_dir, store_map_dir_for_loading, FsAcceptedMapHeadStore, WorldSavePath,
+    map_save_dir, FsAcceptedMapHeadStore, FsMapChangeSetStore, MapChangeSet, MapMeta, WorldSavePath,
 };
 
 /// Validity window for issued homebase publication attestations.
@@ -177,96 +179,58 @@ fn present_descriptor(
     }
 }
 
-/// Parses an `IVec3` chunk position from a `chunk_{x}_{y}_{z}` file stem.
-fn parse_chunk_pos(stem: &str) -> Option<IVec3> {
-    let rest = stem.strip_prefix("chunk_")?;
-    let mut parts = rest.split('_');
-    let x = parts.next()?.parse().ok()?;
-    let y = parts.next()?.parse().ok()?;
-    let z = parts.next()?.parse().ok()?;
-    if parts.next().is_some() {
-        return None;
+/// Builds a `Tombstoned` manifest descriptor (delete slot; carries no blob).
+fn tombstone_descriptor(
+    class: PayloadClass,
+    key: PayloadKey,
+    schema_version: u32,
+) -> ManifestPayloadDescriptor {
+    ManifestPayloadDescriptor {
+        class,
+        key,
+        slot: ManifestPayloadSlot::Tombstoned,
+        schema_version,
     }
-    Some(IVec3::new(x, y, z))
 }
 
-/// Lists saved chunk positions in `<map_dir>/<dir>` whose file names end with `suffix`.
-fn list_saved_chunk_positions(
-    map_dir: &Path,
-    dir: &str,
-    suffix: &str,
-) -> Result<Vec<IVec3>, MapPersistenceRejection> {
-    let path = map_dir.join(dir);
-    if !path.exists() {
-        trace!(
-            ?path,
-            "homebase {dir} directory absent during attestation read-back"
-        );
-        return Ok(Vec::new());
-    }
-    let mut positions = Vec::new();
-    for entry in std::fs::read_dir(&path)
-        .map_err(|e| MapPersistenceRejection::Filesystem(format!("read {dir} dir: {e}")))?
-    {
-        let entry = entry
-            .map_err(|e| MapPersistenceRejection::Filesystem(format!("read {dir} entry: {e}")))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(stem) = name.strip_suffix(suffix) else {
-            trace!(
-                ?name,
-                "skipping non-payload file during attestation read-back"
-            );
-            continue;
-        };
-        let Some(pos) = parse_chunk_pos(stem) else {
-            return Err(MapPersistenceRejection::Invalid(format!(
-                "unparseable chunk file name: {name}"
-            )));
-        };
-        positions.push(pos);
-    }
-    positions.sort_by_key(|pos| (pos.x, pos.y, pos.z));
-    Ok(positions)
+/// Classified publish slots for one homebase delta: blobs to upload (`Present`) plus
+/// `Tombstoned` descriptors (deletes), and the payload scope describing them.
+struct HomebasePublishSlots {
+    present_payloads: Vec<(ManifestPayloadDescriptor, Vec<u8>)>,
+    tombstoned: Vec<ManifestPayloadDescriptor>,
+    scope: HomebasePayloadScope,
 }
 
-/// Reads the materialized homebase save from disk, re-encoding each present slot with the
-/// shared payload encoders. Returns the authoritative state (descriptor root, payload scope,
-/// revision) plus the encoded bytes for every present slot so the caller can upload them.
+/// Classifies the durable change-set candidates into publish slots using the live map state.
 ///
-/// This is the server's source of truth: under the "server encodes, client signs" model the
-/// server, not the client, produces canonical payload bytes, so the descriptor root always
-/// matches the manifest the client signs.
-fn read_authoritative_homebase_publish(
-    save_root: &Path,
-    owner: NostrPublicKey,
-) -> Result<
-    (
-        AuthoritativeHomebaseState,
-        Vec<(ManifestPayloadDescriptor, Vec<u8>)>,
-    ),
-    MapPersistenceRejection,
-> {
-    let map_id = MapInstanceId::Homebase { owner };
-    let canonical_map_dir = map_save_dir(save_root, &map_id);
-    let map_dir = store_map_dir_for_loading(&canonical_map_dir)
-        .map_err(|e| MapPersistenceRejection::Filesystem(format!("resolve homebase dir: {e}")))?;
-    let map_dir_arc = Arc::new(map_dir.clone());
-
+/// For each candidate chunk: byte-identical to freshly-generated terrain -> `Tombstoned` (and the
+/// on-disk file is deleted so local load regenerates it); otherwise `Present` with the current
+/// in-memory chunk bytes. Meta and map-level entities are `Present` on the genesis revision or
+/// when their change flag is set, else omitted (restore preserves omitted slots).
+///
+/// Per-chunk entity slots are not driven by the change-set (it tracks only terrain candidates +
+/// meta/map-entity flags), so they are not published here.
+fn resolve_homebase_publish_slots(
+    instance: &VoxelMapInstance,
+    generator: &dyn VoxelGeneratorImpl,
+    chunk_store: &FsChunkStore,
+    meta_store: &FsMapMetaStore,
+    map_entities_store: &FsMapEntitiesStore,
+    change_set: &MapChangeSet,
+    is_genesis: bool,
+) -> Result<HomebasePublishSlots, MapPersistenceRejection> {
     let mut present_payloads: Vec<(ManifestPayloadDescriptor, Vec<u8>)> = Vec::new();
+    let mut tombstoned: Vec<ManifestPayloadDescriptor> = Vec::new();
     let mut scope = HomebasePayloadScope::default();
-    let mut push_present = |class, key, schema_version, bytes: Vec<u8>| {
-        present_payloads.push((
-            present_descriptor(class, key, schema_version, &bytes),
-            bytes,
-        ));
-    };
 
-    let meta = FsMapMetaStore {
-        map_dir: map_dir_arc.clone(),
-    }
-    .load(&())
-    .map_err(|e| MapPersistenceRejection::Filesystem(format!("load homebase meta: {e}")))?;
-    if let Some(meta) = meta {
+    // Genesis must carry meta so restore can fetch the seed and regenerate folded-out chunks.
+    if is_genesis || change_set.meta_changed {
+        let meta = meta_store
+            .load(&())
+            .map_err(|e| MapPersistenceRejection::Filesystem(format!("load homebase meta: {e}")))?
+            .ok_or_else(|| {
+                MapPersistenceRejection::Incomplete("homebase meta missing for publish".into())
+            })?;
         let spawn_points = meta
             .spawn_points
             .iter()
@@ -278,119 +242,82 @@ fn read_authoritative_homebase_publish(
             meta.generation_version,
             spawn_points,
         )?;
-        push_present(
-            PayloadClass::MapMeta,
-            PayloadKey::Singleton,
-            MAP_META_SCHEMA_VERSION,
+        present_payloads.push((
+            present_descriptor(
+                PayloadClass::MapMeta,
+                PayloadKey::Singleton,
+                MAP_META_SCHEMA_VERSION,
+                &bytes,
+            ),
             bytes,
-        );
+        ));
         scope.includes_meta = true;
     }
 
-    let chunk_store = FsChunkStore {
-        map_dir: map_dir_arc.clone(),
-    };
-    for chunk_pos in list_saved_chunk_positions(&map_dir, "terrain", ".bin")? {
-        let envelope: ChunkFileEnvelope = chunk_store
-            .load(&chunk_pos)
-            .map_err(|e| MapPersistenceRejection::Filesystem(format!("load terrain chunk: {e}")))?
-            .ok_or_else(|| {
-                MapPersistenceRejection::Incomplete(format!(
-                    "listed terrain chunk {chunk_pos} missing on read-back"
-                ))
+    let mut candidates: Vec<IVec3> = change_set.chunk_candidates.iter().copied().collect();
+    candidates.sort_by_key(|pos| (pos.x, pos.y, pos.z));
+    for pos in candidates {
+        let key = PayloadKey::Chunk {
+            x: pos.x,
+            y: pos.y,
+            z: pos.z,
+        };
+        if instance.chunk_matches_generated(pos, generator) {
+            tombstoned.push(tombstone_descriptor(
+                PayloadClass::TerrainChunk,
+                key,
+                CHUNK_SAVE_VERSION,
+            ));
+            scope.tombstoned_chunks.push(pos);
+            chunk_store.delete(&pos).map_err(|e| {
+                MapPersistenceRejection::Filesystem(format!("delete reverted chunk {pos}: {e}"))
             })?;
+            continue;
+        }
+        let Some(data) = instance.get_chunk_data(pos) else {
+            trace!(
+                ?pos,
+                "publish candidate differs from generated but is not loaded; skipping"
+            );
+            continue;
+        };
+        let envelope = ChunkFileEnvelope {
+            version: CHUNK_SAVE_VERSION,
+            chunk_size: instance.chunk_size,
+            data: data.clone(),
+        };
         let bytes = encode_chunk_payload(envelope)?;
-        push_present(
-            PayloadClass::TerrainChunk,
-            PayloadKey::Chunk {
-                x: chunk_pos.x,
-                y: chunk_pos.y,
-                z: chunk_pos.z,
-            },
-            CHUNK_SAVE_VERSION,
+        present_payloads.push((
+            present_descriptor(PayloadClass::TerrainChunk, key, CHUNK_SAVE_VERSION, &bytes),
             bytes,
-        );
-        scope.edited_chunks.push(chunk_pos);
+        ));
+        scope.edited_chunks.push(pos);
     }
 
-    let chunk_entities_store = FsChunkEntitiesStore {
-        map_dir: map_dir_arc.clone(),
-    };
-    for chunk_pos in list_saved_chunk_positions(&map_dir, "entities", ".entities.bin")? {
-        let spawns = chunk_entities_store
-            .load(&chunk_pos)
-            .map_err(|e| MapPersistenceRejection::Filesystem(format!("load chunk entities: {e}")))?
-            .ok_or_else(|| {
-                MapPersistenceRejection::Incomplete(format!(
-                    "listed chunk entities {chunk_pos} missing on read-back"
-                ))
-            })?;
-        let bytes = encode_chunk_entities_payload(spawns)?;
-        push_present(
-            PayloadClass::ChunkEntities,
-            PayloadKey::Chunk {
-                x: chunk_pos.x,
-                y: chunk_pos.y,
-                z: chunk_pos.z,
-            },
-            CHUNK_ENTITIES_SCHEMA_VERSION,
-            bytes,
-        );
-        scope.chunk_entities.push(chunk_pos);
+    if is_genesis || change_set.map_entities_changed {
+        if let Some(entities) = map_entities_store
+            .load(&())
+            .map_err(|e| MapPersistenceRejection::Filesystem(format!("load map entities: {e}")))?
+        {
+            let bytes = encode_map_entities_payload(entities)?;
+            present_payloads.push((
+                present_descriptor(
+                    PayloadClass::MapEntities,
+                    PayloadKey::Singleton,
+                    MAP_ENTITIES_SCHEMA_VERSION,
+                    &bytes,
+                ),
+                bytes,
+            ));
+            scope.includes_map_entities = true;
+        }
     }
 
-    let map_entities = FsMapEntitiesStore {
-        map_dir: map_dir_arc.clone(),
-    }
-    .load(&())
-    .map_err(|e| MapPersistenceRejection::Filesystem(format!("load map entities: {e}")))?;
-    if let Some(entities) = map_entities {
-        let bytes = encode_map_entities_payload(entities)?;
-        push_present(
-            PayloadClass::MapEntities,
-            PayloadKey::Singleton,
-            MAP_ENTITIES_SCHEMA_VERSION,
-            bytes,
-        );
-        scope.includes_map_entities = true;
-    }
-
-    let descriptors: Vec<ManifestPayloadDescriptor> =
-        present_payloads.iter().map(|(d, _)| d.clone()).collect();
-    let descriptor_root = compute_descriptor_root(&descriptors)
-        .map_err(|e| MapPersistenceRejection::Invalid(format!("descriptor root: {e}")))?;
-
-    let accepted_head = FsAcceptedMapHeadStore {
-        map_dir: map_dir_arc,
-    }
-    .load(&())
-    .map_err(|e| MapPersistenceRejection::Filesystem(format!("load accepted head: {e}")))?;
-    let (server_revision, previous_manifest_hash) = match accepted_head {
-        Some(MapRevision {
-            revision,
-            manifest_hash,
-            ..
-        }) => (revision + 1, Some(manifest_hash)),
-        None => (0, None),
-    };
-
-    let state = AuthoritativeHomebaseState {
-        owner,
-        map_id,
-        server_revision,
-        previous_manifest_hash,
-        descriptor_root,
-        payload_scope: scope,
-    };
-    Ok((state, present_payloads))
-}
-
-/// Reads authoritative homebase state (descriptor root, payload scope, revision) from disk.
-pub fn read_authoritative_homebase_state(
-    save_root: &Path,
-    owner: NostrPublicKey,
-) -> Result<AuthoritativeHomebaseState, MapPersistenceRejection> {
-    read_authoritative_homebase_publish(save_root, owner).map(|(state, _)| state)
+    Ok(HomebasePublishSlots {
+        present_payloads,
+        tombstoned,
+        scope,
+    })
 }
 
 /// Current unix time in seconds for attestation issuance/expiry.
@@ -409,14 +336,33 @@ pub struct PendingHomebaseAttestations {
     tasks: Vec<(Entity, Task<HomebaseAttestationResponse>)>,
 }
 
+/// Per-map components a homebase publish reads: the live voxel state + generator (for the
+/// equals-generated classification) and the persistence backends the delta is sourced from.
+type HomebasePublishQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static MapInstanceId,
+        &'static VoxelMapInstance,
+        &'static VoxelGenerator,
+        &'static StoreBackend<IVec3, ChunkFileEnvelope, FsChunkStore>,
+        &'static StoreBackend<(), MapMeta, FsMapMetaStore>,
+        &'static StoreBackend<(), Vec<SavedEntity>, FsMapEntitiesStore>,
+        &'static StoreBackend<(), MapChangeSet, FsMapChangeSetStore>,
+    ),
+    With<Homebase>,
+>;
+
 /// Handles client homebase publication requests under the "server encodes, client signs" model.
 ///
-/// The server reads back its authoritative homebase save, signs an attestation, and spawns an
-/// async task that uploads the payload blobs to Blossom and assembles the unsigned manifest the
-/// client will sign with the player's Nostr key.
+/// The server classifies the durable change-set against the live map (Present edits vs
+/// Tombstoned reverts), signs an attestation, and spawns an async task that uploads the Present
+/// blobs to Blossom and assembles the unsigned chained-delta manifest the client will sign with
+/// the player's Nostr key.
 pub fn handle_homebase_attestation_requests(
     mut receivers: Query<(Entity, &mut MessageReceiver<HomebaseAttestationRequest>)>,
     player_identities: Query<&PlayerIdentity>,
+    homebase_maps: HomebasePublishQuery,
     mut responders: Query<&mut MessageSender<HomebaseAttestationResponse>>,
     server_identity: Res<NostrKeys>,
     save_path: Res<WorldSavePath>,
@@ -428,6 +374,7 @@ pub fn handle_homebase_attestation_requests(
             match begin_homebase_publication(
                 client_entity,
                 &player_identities,
+                &homebase_maps,
                 &server_identity,
                 &save_path.0,
                 &publish_config,
@@ -480,10 +427,12 @@ fn reply_attestation(
     }
 }
 
-/// Validates the request and starts the async upload, returning the in-flight task.
+/// Validates the request, classifies the change-set against the live homebase map, signs the
+/// attestation, and starts the async upload, returning the in-flight task.
 fn begin_homebase_publication(
     client_entity: Entity,
     player_identities: &Query<&PlayerIdentity>,
+    homebase_maps: &HomebasePublishQuery,
     server_identity: &NostrKeys,
     save_root: &Path,
     publish_config: &RemoteMapPublishConfig,
@@ -511,14 +460,72 @@ fn begin_homebase_publication(
             )
         })?;
 
-    let (state, present_payloads) = read_authoritative_homebase_publish(save_root, owner)?;
+    let (_, instance, generator, chunk_backend, meta_backend, map_entities_backend, change_backend) =
+        homebase_maps
+            .iter()
+            .find(|(mid, ..)| **mid == map_id)
+            .ok_or_else(|| {
+                MapPersistenceRejection::Unavailable(
+                    "homebase map is not loaded for publish".to_string(),
+                )
+            })?;
+
+    // Accepted head lives at the map's top-level dir; read it to chain this delta.
+    let canonical_map_dir = map_save_dir(save_root, &map_id);
+    let accepted_head = FsAcceptedMapHeadStore {
+        map_dir: Arc::new(canonical_map_dir),
+    }
+    .load(&())
+    .map_err(|e| MapPersistenceRejection::Filesystem(format!("load accepted head: {e}")))?;
+    let (server_revision, previous_manifest_hash) = match accepted_head {
+        Some(MapRevision {
+            revision,
+            manifest_hash,
+            ..
+        }) => (revision + 1, Some(manifest_hash)),
+        None => (0, None),
+    };
+    let is_genesis = previous_manifest_hash.is_none();
+
+    let change_set = Store::load(&change_backend.0, &())
+        .map_err(|e| MapPersistenceRejection::Filesystem(format!("load change set: {e}")))?
+        .unwrap_or_default();
+
+    let HomebasePublishSlots {
+        present_payloads,
+        tombstoned,
+        scope,
+    } = resolve_homebase_publish_slots(
+        instance,
+        generator.0.as_ref(),
+        &chunk_backend.0,
+        &meta_backend.0,
+        &map_entities_backend.0,
+        &change_set,
+        is_genesis,
+    )?;
+
+    let mut all_descriptors: Vec<ManifestPayloadDescriptor> =
+        present_payloads.iter().map(|(d, _)| d.clone()).collect();
+    all_descriptors.extend(tombstoned.iter().cloned());
+    let descriptor_root = compute_descriptor_root(&all_descriptors)
+        .map_err(|e| MapPersistenceRejection::Invalid(format!("descriptor root: {e}")))?;
+
+    let state = AuthoritativeHomebaseState {
+        owner,
+        map_id: map_id.clone(),
+        server_revision,
+        previous_manifest_hash,
+        descriptor_root,
+        payload_scope: scope.clone(),
+    };
     let now_unix = now_unix_seconds()?;
     let attestation = verify_homebase_publication_attestation_request(
         &ServerAttestationSigner(server_identity),
         owner,
         &map_id,
-        state.descriptor_root,
-        &state.payload_scope,
+        descriptor_root,
+        &scope,
         &state,
         now_unix,
         HOMEBASE_ATTESTATION_TTL_SECONDS,
@@ -528,19 +535,17 @@ fn begin_homebase_publication(
         upload_url,
         auth: BlossomAuth::from_keys(server_identity),
     };
-    let revision = state.server_revision;
-    let previous_hash = state.previous_manifest_hash;
-    let descriptor_root = state.descriptor_root;
 
     Ok(IoTaskPool::get().spawn(async move {
         match upload_and_build_unsigned_manifest(
             blob_store,
             base_url,
             present_payloads,
+            tombstoned,
             owner,
             map_id,
-            revision,
-            previous_hash,
+            server_revision,
+            previous_manifest_hash,
             descriptor_root,
             attestation,
         )
@@ -555,12 +560,14 @@ fn begin_homebase_publication(
     }))
 }
 
-/// Uploads each present payload blob to Blossom, then assembles the unsigned manifest JSON.
+/// Uploads each present payload blob to Blossom, appends the tombstone descriptors, then
+/// assembles the unsigned manifest JSON through the shared finalizer.
 #[allow(clippy::too_many_arguments)]
 async fn upload_and_build_unsigned_manifest(
     blob_store: BlossomBlobPutStore,
     base_url: url::Url,
     present_payloads: Vec<(ManifestPayloadDescriptor, Vec<u8>)>,
+    tombstoned: Vec<ManifestPayloadDescriptor>,
     owner: NostrPublicKey,
     map_id: MapInstanceId,
     revision: u64,
@@ -568,7 +575,7 @@ async fn upload_and_build_unsigned_manifest(
     descriptor_root: [u8; 32],
     attestation: HomebasePublicationAttestation,
 ) -> Result<(String, [u8; 32]), MapPersistenceRejection> {
-    let mut payloads = Vec::with_capacity(present_payloads.len());
+    let mut payloads = Vec::with_capacity(present_payloads.len() + tombstoned.len());
     for (mut descriptor, bytes) in present_payloads {
         if let ManifestPayloadSlot::Present { blob } = &mut descriptor.slot {
             let mut get_url = base_url.clone();
@@ -580,17 +587,20 @@ async fn upload_and_build_unsigned_manifest(
         }
         payloads.push(descriptor);
     }
+    payloads.extend(tombstoned);
 
-    let manifest = NostrMapManifest {
+    let manifest = finalize_manifest(
+        payloads,
         map_id,
         owner,
         revision,
         previous_hash,
-        payloads,
-        schema_version: MAP_MANIFEST_SCHEMA_VERSION,
-        descriptor_root,
-        homebase_attestation: Some(attestation),
-    };
+        Some(attestation),
+    )?;
+    debug_assert_eq!(
+        manifest.descriptor_root, descriptor_root,
+        "uploaded manifest root must equal the attested descriptor root"
+    );
     let manifest_hash = compute_manifest_hash(&manifest)
         .map_err(|e| MapPersistenceRejection::Invalid(format!("hash unsigned manifest: {e}")))?;
     let json = manifest_to_json(&manifest).map_err(|e| {
@@ -697,77 +707,156 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn parses_chunk_positions_including_negatives() {
-        assert_eq!(parse_chunk_pos("chunk_1_-2_3"), Some(IVec3::new(1, -2, 3)));
-        assert_eq!(parse_chunk_pos("chunk_0_0_0"), Some(IVec3::ZERO));
-        assert_eq!(parse_chunk_pos("chunk_1_2"), None);
-        assert_eq!(parse_chunk_pos("chunk_1_2_3_4"), None);
-        assert_eq!(parse_chunk_pos("other_1_2_3"), None);
-    }
+    use voxel_map_engine::prelude::{ChunkData, ChunkStatus, WorldVoxel};
 
-    #[test]
-    fn read_back_empty_homebase_is_genesis() {
-        let dir = tempfile::tempdir().unwrap();
-        let owner = NostrPublicKey([7; 32]);
-        let state = read_authoritative_homebase_state(dir.path(), owner).expect("read empty state");
+    const PADDED_VOLUME_16: usize = 18 * 18 * 18;
 
-        assert_eq!(state.server_revision, 0);
-        assert_eq!(state.previous_manifest_hash, None);
-        assert_eq!(state.payload_scope, HomebasePayloadScope::default());
-        assert_eq!(state.descriptor_root, compute_descriptor_root(&[]).unwrap());
-    }
-
-    #[test]
-    fn read_back_with_meta_grants_matching_request_and_rejects_tampered_root() {
-        use crate::persistence::fs_map_meta::FsMapMetaStore;
-        use crate::persistence::{map_save_dir, MapMeta};
-
-        let dir = tempfile::tempdir().unwrap();
-        let owner = NostrPublicKey([7; 32]);
-        let map_dir = map_save_dir(dir.path(), &MapInstanceId::Homebase { owner });
-        FsMapMetaStore {
-            map_dir: Arc::new(map_dir),
+    /// Test generator producing all-air terrain for every chunk.
+    struct AirGenerator;
+    impl VoxelGeneratorImpl for AirGenerator {
+        fn generate_terrain(&self, _chunk_pos: IVec3) -> Vec<WorldVoxel> {
+            vec![WorldVoxel::Air; PADDED_VOLUME_16]
         }
-        .save(
-            &(),
-            &MapMeta {
-                version: 1,
-                seed: 99,
-                generation_version: 2,
-                spawn_points: vec![Vec3::new(1.0, 2.0, 3.0)],
-            },
+    }
+
+    fn test_chunk_store(dir: &std::path::Path) -> FsChunkStore {
+        FsChunkStore {
+            map_dir: Arc::new(dir.to_path_buf()),
+        }
+    }
+
+    fn test_meta_store(dir: &std::path::Path) -> FsMapMetaStore {
+        FsMapMetaStore {
+            map_dir: Arc::new(dir.to_path_buf()),
+        }
+    }
+
+    fn test_map_entities_store(dir: &std::path::Path) -> FsMapEntitiesStore {
+        FsMapEntitiesStore {
+            map_dir: Arc::new(dir.to_path_buf()),
+        }
+    }
+
+    fn instance_with_air_chunk(pos: IVec3) -> VoxelMapInstance {
+        let mut instance = VoxelMapInstance::new(5, 16);
+        let voxels = vec![WorldVoxel::Air; PADDED_VOLUME_16];
+        instance.insert_chunk_data(pos, ChunkData::from_voxels(&voxels, ChunkStatus::Full));
+        instance
+    }
+
+    fn change_set_for(pos: IVec3) -> MapChangeSet {
+        let mut change_set = MapChangeSet::default();
+        change_set.chunk_candidates.insert(pos);
+        change_set
+    }
+
+    #[test]
+    fn resolve_tombstones_reverted_chunk_and_deletes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let pos = IVec3::new(1, 0, -2);
+        let instance = instance_with_air_chunk(pos); // equals AirGenerator output
+        let chunk_store = test_chunk_store(dir.path());
+        chunk_store
+            .save(
+                &pos,
+                &ChunkFileEnvelope {
+                    version: CHUNK_SAVE_VERSION,
+                    chunk_size: 16,
+                    data: ChunkData::from_voxels(
+                        &vec![WorldVoxel::Air; PADDED_VOLUME_16],
+                        ChunkStatus::Full,
+                    ),
+                },
+            )
+            .unwrap();
+
+        let slots = resolve_homebase_publish_slots(
+            &instance,
+            &AirGenerator,
+            &chunk_store,
+            &test_meta_store(dir.path()),
+            &test_map_entities_store(dir.path()),
+            &change_set_for(pos),
+            false,
         )
-        .expect("save meta");
+        .expect("resolve");
 
-        let state = read_authoritative_homebase_state(dir.path(), owner).expect("read state");
-        assert!(state.payload_scope.includes_meta);
-        assert!(state.payload_scope.edited_chunks.is_empty());
-        assert_eq!(state.server_revision, 0);
+        assert!(slots.present_payloads.is_empty());
+        assert_eq!(slots.tombstoned.len(), 1);
+        assert_eq!(slots.tombstoned[0].slot, ManifestPayloadSlot::Tombstoned);
+        assert_eq!(slots.scope.tombstoned_chunks, vec![pos]);
+        assert!(slots.scope.edited_chunks.is_empty());
+        // The reverted chunk's on-disk file is removed so local load regenerates it.
+        assert!(chunk_store.load(&pos).unwrap().is_none());
+    }
 
-        let keys = server_keys();
-        verify_homebase_publication_attestation_request(
-            &ServerAttestationSigner(&keys),
-            owner,
-            &MapInstanceId::Homebase { owner },
-            state.descriptor_root,
-            &state.payload_scope,
-            &state,
-            1_000,
-            HOMEBASE_ATTESTATION_TTL_SECONDS,
+    #[test]
+    fn resolve_presents_edited_chunk() {
+        let dir = tempfile::tempdir().unwrap();
+        let pos = IVec3::ZERO;
+        let mut instance = instance_with_air_chunk(pos);
+        instance.set_voxel(IVec3::new(5, 5, 5), WorldVoxel::Solid(7)); // now differs from generated
+
+        let slots = resolve_homebase_publish_slots(
+            &instance,
+            &AirGenerator,
+            &test_chunk_store(dir.path()),
+            &test_meta_store(dir.path()),
+            &test_map_entities_store(dir.path()),
+            &change_set_for(pos),
+            false,
         )
-        .expect("matching request granted");
+        .expect("resolve");
 
-        let tampered = verify_homebase_publication_attestation_request(
-            &ServerAttestationSigner(&keys),
-            owner,
-            &MapInstanceId::Homebase { owner },
-            [0; 32],
-            &state.payload_scope,
-            &state,
-            1_000,
-            HOMEBASE_ATTESTATION_TTL_SECONDS,
+        assert!(slots.tombstoned.is_empty());
+        assert_eq!(slots.present_payloads.len(), 1);
+        assert_eq!(
+            slots.present_payloads[0].0.class,
+            PayloadClass::TerrainChunk
         );
-        assert!(tampered.is_err());
+        assert!(matches!(
+            slots.present_payloads[0].0.slot,
+            ManifestPayloadSlot::Present { .. }
+        ));
+        assert_eq!(slots.scope.edited_chunks, vec![pos]);
+    }
+
+    #[test]
+    fn descriptor_root_covers_tombstones() {
+        let dir = tempfile::tempdir().unwrap();
+        let pos = IVec3::new(2, 0, 0);
+        let instance = instance_with_air_chunk(pos);
+        let chunk_store = test_chunk_store(dir.path());
+
+        let slots = resolve_homebase_publish_slots(
+            &instance,
+            &AirGenerator,
+            &chunk_store,
+            &test_meta_store(dir.path()),
+            &test_map_entities_store(dir.path()),
+            &change_set_for(pos),
+            false,
+        )
+        .expect("resolve");
+
+        let mut with_tombstone: Vec<ManifestPayloadDescriptor> = slots
+            .present_payloads
+            .iter()
+            .map(|(d, _)| d.clone())
+            .collect();
+        with_tombstone.extend(slots.tombstoned.iter().cloned());
+        let root_with = compute_descriptor_root(&with_tombstone).unwrap();
+
+        let present_only: Vec<ManifestPayloadDescriptor> = slots
+            .present_payloads
+            .iter()
+            .map(|(d, _)| d.clone())
+            .collect();
+        let root_without = compute_descriptor_root(&present_only).unwrap();
+
+        assert_ne!(
+            root_with, root_without,
+            "the tombstone slot must contribute to the descriptor root"
+        );
     }
 }
