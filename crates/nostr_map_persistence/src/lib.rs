@@ -21,15 +21,16 @@ pub use protocol::{HomebasePayloadScope, HomebasePublicationAttestation};
 pub use validation::validate_homebase_manifest_attestation;
 
 pub use manifest::{
-    canonical_manifest_bytes, compute_descriptor_root, compute_manifest_hash, manifest_event_draft,
-    manifest_event_tags, manifest_from_json, manifest_hash_hex, manifest_payload_descriptor_order,
-    manifest_to_json, map_tag_value, verify_descriptor_root, verify_manifest_event,
-    verify_manifest_event_tags, verify_manifest_event_with_hash, ManifestHash,
-    ManifestPayloadDescriptor, ManifestPayloadSlot, MapPersistenceRejection, MapRevision,
-    NostrMapManifest, PayloadClass, PayloadKey, PayloadSlotState, RawChunkEntitiesPayload,
-    RawChunkPayload, RawMapEntitiesPayload, RawMapMetaPayload, RawMapPayloads, RawSaveBase,
-    RawValidatedMapDelta, RawValidatedMapSave, VerifiedManifest, MANIFEST_HASH_TAG,
-    MAP_MANIFEST_SCHEMA_VERSION, MAP_TAG, NOSTR_KIND_MAP_MANIFEST, PREVIOUS_MANIFEST_HASH_TAG,
+    canonical_manifest_bytes, compute_descriptor_root, compute_manifest_hash, finalize_manifest,
+    manifest_event_draft, manifest_event_tags, manifest_from_json, manifest_hash_hex,
+    manifest_payload_descriptor_order, manifest_to_json, map_tag_value, verify_descriptor_root,
+    verify_manifest_event, verify_manifest_event_tags, verify_manifest_event_with_hash,
+    ManifestHash, ManifestPayloadDescriptor, ManifestPayloadSlot, MapPersistenceRejection,
+    MapRevision, NostrMapManifest, PayloadClass, PayloadKey, PayloadSlotState,
+    RawChunkEntitiesPayload, RawChunkPayload, RawMapEntitiesPayload, RawMapMetaPayload,
+    RawMapPayloads, RawSaveBase, RawValidatedMapDelta, RawValidatedMapSave, VerifiedManifest,
+    MANIFEST_HASH_TAG, MAP_MANIFEST_SCHEMA_VERSION, MAP_TAG, NOSTR_KIND_MAP_MANIFEST,
+    PREVIOUS_MANIFEST_HASH_TAG,
 };
 pub use nostr_client::BlobRef;
 pub use policy::{ManifestTieBreak, MapPersistencePolicy, NostrMapQueryPolicy};

@@ -227,6 +227,33 @@ pub fn manifest_payload_descriptor_order(descriptor: &ManifestPayloadDescriptor)
         .expect("manifest payload descriptors must serialize for deterministic ordering")
 }
 
+/// Sorts payload descriptors deterministically, computes the descriptor root, and assembles the
+/// (unsigned) manifest. Shared by overworld server publish and homebase publish so both produce
+/// byte-identical descriptor roots from the same slots.
+#[allow(clippy::too_many_arguments)]
+pub fn finalize_manifest(
+    mut payloads: Vec<ManifestPayloadDescriptor>,
+    map_id: MapInstanceId,
+    owner: NostrPublicKey,
+    revision: u64,
+    previous_hash: Option<ManifestHash>,
+    homebase_attestation: Option<protocol::HomebasePublicationAttestation>,
+) -> Result<NostrMapManifest, MapPersistenceRejection> {
+    payloads.sort_by_key(manifest_payload_descriptor_order);
+    let descriptor_root = compute_descriptor_root(&payloads)
+        .map_err(|error| MapPersistenceRejection::Invalid(error.to_string()))?;
+    Ok(NostrMapManifest {
+        map_id,
+        owner,
+        revision,
+        previous_hash,
+        payloads,
+        schema_version: MAP_MANIFEST_SCHEMA_VERSION,
+        descriptor_root,
+        homebase_attestation,
+    })
+}
+
 /// Computes the descriptor root for a payload descriptor list.
 pub fn compute_descriptor_root(
     payloads: &[ManifestPayloadDescriptor],
@@ -501,6 +528,45 @@ mod tests {
             descriptor_root,
             homebase_attestation: None,
         }
+    }
+
+    #[test]
+    fn finalize_manifest_matches_hand_built_manifest() {
+        let (_secret, owner) = owner();
+        // Two descriptors out of canonical order to exercise the sort.
+        let payloads = vec![
+            ManifestPayloadDescriptor {
+                class: PayloadClass::TerrainChunk,
+                key: PayloadKey::Chunk { x: 1, y: 0, z: -2 },
+                slot: ManifestPayloadSlot::Tombstoned,
+                schema_version: 4,
+            },
+            ManifestPayloadDescriptor {
+                class: PayloadClass::MapMeta,
+                key: PayloadKey::Singleton,
+                slot: ManifestPayloadSlot::Present { blob: blob(b"meta") },
+                schema_version: 1,
+            },
+        ];
+
+        let finalized =
+            finalize_manifest(payloads.clone(), MapInstanceId::Overworld, owner, 7, None, None)
+                .unwrap();
+
+        let mut expected_payloads = payloads;
+        expected_payloads.sort_by_key(manifest_payload_descriptor_order);
+        let expected_root = compute_descriptor_root(&expected_payloads).unwrap();
+        let expected = NostrMapManifest {
+            map_id: MapInstanceId::Overworld,
+            owner,
+            revision: 7,
+            previous_hash: None,
+            payloads: expected_payloads,
+            schema_version: MAP_MANIFEST_SCHEMA_VERSION,
+            descriptor_root: expected_root,
+            homebase_attestation: None,
+        };
+        assert_eq!(finalized, expected);
     }
 
     #[test]

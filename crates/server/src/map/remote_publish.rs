@@ -7,11 +7,10 @@ use bevy::prelude::*;
 use bevy::tasks::Task;
 use nostr_client::BlobRef;
 use nostr_map_persistence::{
-    build_signed_map_manifest_event, compute_descriptor_root, encode_chunk_entities_payload,
-    encode_chunk_payload, encode_map_entities_payload, encode_map_meta_payload,
-    manifest_payload_descriptor_order, upload_publish_slot, ManifestHash, MapManifestSigner,
-    MapPersistenceRejection, MapRevision, NostrManifestPublishStore, NostrMapManifest,
-    PayloadClass, PayloadKey, PayloadSlotState, MAP_MANIFEST_SCHEMA_VERSION,
+    build_signed_map_manifest_event, encode_chunk_entities_payload, encode_chunk_payload,
+    encode_map_entities_payload, encode_map_meta_payload, finalize_manifest, upload_publish_slot,
+    ManifestHash, MapManifestSigner, MapPersistenceRejection, MapRevision,
+    NostrManifestPublishStore, PayloadClass, PayloadKey, PayloadSlotState,
 };
 use persistence::{
     AsyncStore, AsyncStoreBackend, PendingAsyncStoreOps, PersistenceError, SaveOpId, Store,
@@ -360,19 +359,16 @@ pub async fn prepare_server_map_publish_entry(
     )
     .await?;
 
-    payloads.sort_by_key(manifest_payload_descriptor_order);
-    let descriptor_root = compute_descriptor_root(&payloads)
-        .map_err(|error| MapPersistenceRejection::Invalid(error.to_string()))?;
-    let manifest = NostrMapManifest {
-        map_id: map_id.clone(),
+    let manifest = finalize_manifest(
+        payloads,
+        map_id.clone(),
         owner,
-        revision: draft.local_revision_number,
-        previous_hash: previous_remote_manifest_hash,
-        payloads: payloads.clone(),
-        schema_version: MAP_MANIFEST_SCHEMA_VERSION,
-        descriptor_root,
-        homebase_attestation: None,
-    };
+        draft.local_revision_number,
+        previous_remote_manifest_hash,
+        None,
+    )?;
+    let descriptor_root = manifest.descriptor_root;
+    let payloads = manifest.payloads.clone();
     let (new_manifest_hash, signed_event_json) = build_signed_map_manifest_event(&signer, manifest)
         .map_err(|error| MapPersistenceRejection::Invalid(error.to_string()))?;
     let local_revision = MapRevision {
