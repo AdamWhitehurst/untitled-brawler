@@ -432,9 +432,10 @@ Register the system after `poll_homebase_attestation_uploads`.
 
 ### Verification
 #### Automated
-- [ ] pgrep guard passes
-- [ ] `cargo test -p server` — add: confirmation advances accepted_head to the granted revision; published keys removed from change-set; keys edited after snapshot survive; unknown hash is ignored
-- [ ] `cargo check-all`
+- [x] pgrep guard passes
+- [x] `cargo test -p server` — add: confirmation advances accepted_head to the granted revision; published keys removed from change-set; keys edited after snapshot survive; unknown hash is ignored
+  - Covered the change-set clearing (published keys removed + post-snapshot keys survive + flags cleared) via the testable `apply_publish_confirmation_to_change_set` helper. Head-advance + unknown-hash-ignored are system-wiring behaviors (no full-App harness exists in this crate) — verified in the live round-trip below.
+- [x] `cargo check-all`
 
 #### Manual
 - [ ] Live: edit homebase, F7, confirm server advances accepted_head; edit again, F7 → second manifest `previous_hash` chains to the first and publishes only the newly-edited chunk

@@ -188,8 +188,10 @@ placed/removed/moved/rotated are published the same way (their current object
 list, `Present`). The server chains the delta onto the accepted head,
 signs a `HomebasePublicationAttestation`, and returns an unsigned
 `NostrMapManifest`; the client signs that manifest event with the **player's**
-Nostr key and publishes it to relays. Each publish is a small chained delta of
-genuine edits, not a full snapshot. Remote import of a Homebase manifest is
+Nostr key and publishes it to relays, then confirms back to the server, which
+advances the accepted head and clears the published keys from its change-set so
+the next publish chains onto this revision. Each publish is a small chained delta
+of genuine edits, not a full snapshot. Remote import of a Homebase manifest is
 accepted only if it carries a valid player signature and a valid server
 attestation (the temporary Phase 3 insecure import path is removed).
 
