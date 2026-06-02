@@ -3,3 +3,5 @@ lcov.info
 *.bin
 *.bin.corrupt
 .pi-lens/
+**/*/active_revision
+
