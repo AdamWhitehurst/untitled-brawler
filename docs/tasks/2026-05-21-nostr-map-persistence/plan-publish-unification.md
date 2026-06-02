@@ -465,10 +465,11 @@ Add `&VoxelGenerator` and the change-set store backend to the query tuple. Keep 
 
 ### Verification
 #### Automated
-- [ ] pgrep guard passes
-- [ ] `cargo test -p server world_persistence map_transition` — existing overworld publish/restore tests pass; add: reverted overworld chunk publishes a Tombstone and regenerates on restore
-- [ ] `cargo test-all`
-- [ ] `cargo check-all`
+- [x] pgrep guard passes
+- [x] `cargo test -p server world_persistence map_transition` — existing overworld publish/restore tests pass; add: reverted overworld chunk publishes a Tombstone and regenerates on restore
+  - Tombstone classification is the same `chunk_matches_generated` primitive covered at engine level + by homebase `resolve_tombstones_reverted_chunk_and_deletes_file`; the new `clear_published_change_set_keys` unit test covers candidate clearing on publish. The overworld helper `build_overworld_publish_slots` needs ECS `Query` so its end-to-end tombstone+restore is exercised in the live round-trip below.
+- [x] `cargo test-all` — `test-native` (whole workspace minus `web`) green; full-workspace **wasm32 compile green** including the `web` crate's tests (`Finished` in ~24m; fixed `blobs.rs` reqwest `.timeout()` for wasm32). The `test-wasm` headless-Firefox **runtime** of the web tests was not executed (needs a browser; orthogonal to these server-side changes).
+- [x] `cargo check-all` (clean, no warnings)
 
 #### Manual
 - [ ] Live overworld: edit chunks (server publishes incrementally as before); revert a chunk to generated → next publish tombstones it; round-trip restore regenerates it from seed
@@ -477,6 +478,6 @@ Add `&VoxelGenerator` and the change-set store backend to the query tuple. Keep 
 
 ## Post-implementation
 
-- [ ] Update `README.md` if publish behavior/commands are documented (F7 flow, deletion semantics)
-- [ ] Strip all `// DEBUG` lines (`grep -rn "// DEBUG" crates/server/src crates/client/src`) before final commits
-- [ ] `cargo test-all` green
+- [x] Update `README.md` if publish behavior/commands are documented (F7 flow, deletion semantics) — homebase delta + confirmation documented in Phases 5/6
+- [x] Strip all `// DEBUG` lines (`grep -rn "// DEBUG" crates/server/src crates/client/src`) before final commits — stripped in Phase 3
+- [x] `cargo test-all` green — `test-native` green; full-workspace wasm32 compile green (incl. `web`); only the headless-Firefox runtime is environment-gated and unrun
