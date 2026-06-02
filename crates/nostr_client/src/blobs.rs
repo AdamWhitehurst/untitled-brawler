@@ -63,6 +63,8 @@ pub const NOSTR_KIND_BLOSSOM_AUTH: u16 = 24242;
 ///
 /// Without a bound a stalled upload endpoint hangs the publish task forever, so the
 /// requesting client never receives a response. A timeout turns a stall into an error.
+/// Only applied on native targets; reqwest's wasm backend has no request-timeout builder.
+#[cfg(not(target_arch = "wasm32"))]
 const BLOB_UPLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Signed BUD-11 Blossom authorization helper.
@@ -220,9 +222,11 @@ pub async fn upload_blob(
     let sha_header = sha256_hex.clone();
     let put_url = url.clone();
     let response = crate::compat::await_network(async move {
-        let client = reqwest::Client::builder()
-            .timeout(BLOB_UPLOAD_TIMEOUT)
-            .build()?;
+        let builder = reqwest::Client::builder();
+        // reqwest's wasm backend has no request-timeout builder method.
+        #[cfg(not(target_arch = "wasm32"))]
+        let builder = builder.timeout(BLOB_UPLOAD_TIMEOUT);
+        let client = builder.build()?;
         client
             .put(put_url)
             .header("Authorization", auth_header)
