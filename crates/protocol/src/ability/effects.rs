@@ -199,7 +199,7 @@ pub fn apply_while_active_effects(
         for effect in &effects.0 {
             match effect {
                 AbilityEffect::SetVelocity { speed, target } => {
-                    let target_entity = resolve_caster_target(&target, active);
+                    let target_entity = resolve_caster_target(target, active);
                     if let Ok((rotation, mut velocity)) = caster_query.get_mut(target_entity) {
                         let direction = super::types::facing_direction(rotation);
                         velocity.x = direction.x * speed;

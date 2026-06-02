@@ -329,7 +329,7 @@ impl TicketLevelPropagator {
 
     /// Finds columns that were loaded but are now absent or above threshold.
     fn classify_removed_columns(&self, old_loaded: &HashMap<IVec2, u32>, diff: &mut LevelDiff) {
-        for (col, _) in old_loaded {
+        for col in old_loaded.keys() {
             let still_loaded = self
                 .levels
                 .get(col)

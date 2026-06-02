@@ -2,7 +2,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::log::info_span;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
-use block_mesh::{greedy_quads, GreedyQuadsBuffer, RIGHT_HANDED_Y_UP_CONFIG};
+use block_mesh::{GreedyQuadsBuffer, RIGHT_HANDED_Y_UP_CONFIG, greedy_quads};
 use ndshape::Shape;
 
 use crate::types::WorldVoxel;
@@ -219,8 +219,10 @@ mod tests {
             panic!("terrain mesh colors should be Float32x4");
         };
 
-        assert!(colors
-            .iter()
-            .all(|color| *color == terrain_material_color(1)));
+        assert!(
+            colors
+                .iter()
+                .all(|color| *color == terrain_material_color(1))
+        );
     }
 }

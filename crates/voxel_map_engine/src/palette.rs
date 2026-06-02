@@ -207,7 +207,7 @@ fn build_palette(voxels: &[WorldVoxel]) -> Vec<WorldVoxel> {
 /// Pack voxel indices into u64 words. Indices never span word boundaries.
 fn pack_indices(voxels: &[WorldVoxel], palette: &[WorldVoxel], bits: u8) -> Vec<u64> {
     let entries_per_word = 64 / (bits as usize);
-    let num_words = (voxels.len() + entries_per_word - 1) / entries_per_word;
+    let num_words = voxels.len().div_ceil(entries_per_word);
     let mut data = vec![0u64; num_words];
 
     for (i, &voxel) in voxels.iter().enumerate() {

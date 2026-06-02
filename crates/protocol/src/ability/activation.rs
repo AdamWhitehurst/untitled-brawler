@@ -137,7 +137,7 @@ pub fn ability_activation(
                     0,
                 );
             }
-            let salt = (player_id.0.to_bits()) << 32 | (slot_idx as u64) << 16 | 0u64;
+            let salt = (player_id.0.to_bits()) << 32 | (slot_idx as u64) << 16;
 
             let entity_id = commands
                 .spawn((

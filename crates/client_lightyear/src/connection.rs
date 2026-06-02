@@ -30,17 +30,11 @@ impl Default for ClientNetworkConfig {
     }
 }
 
+#[derive(Default)]
 pub struct ClientNetworkPlugin {
     pub config: ClientNetworkConfig,
 }
 
-impl Default for ClientNetworkPlugin {
-    fn default() -> Self {
-        Self {
-            config: ClientNetworkConfig::default(),
-        }
-    }
-}
 
 impl Plugin for ClientNetworkPlugin {
     fn build(&self, app: &mut App) {

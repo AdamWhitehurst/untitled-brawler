@@ -1939,11 +1939,9 @@ fn abilities_asset_loads_after_on_input_schema_migration() {
     let components = protocol::reflect_loader::deserialize_component_map(&ron_bytes, &reg)
         .expect("migrated punch ability asset should load");
 
-    assert!(
-        components
-            .iter()
-            .any(|component| component.try_downcast_ref::<OnInputEffects>().is_some())
-    );
+    assert!(components
+        .iter()
+        .any(|component| component.try_downcast_ref::<OnInputEffects>().is_some()));
 }
 
 #[test]

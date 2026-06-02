@@ -323,7 +323,7 @@ fn pick_material(
 
 /// Returns the first biome whose height and moisture ranges both contain the
 /// given values. Falls back to the first rule if none match.
-pub fn select_biome<'a>(rules: &'a [BiomeRule], height: f64, moisture: f64) -> &'a BiomeRule {
+pub fn select_biome(rules: &[BiomeRule], height: f64, moisture: f64) -> &BiomeRule {
     debug_assert!(
         !rules.is_empty(),
         "BiomeRules must contain at least one rule"
@@ -395,7 +395,7 @@ impl VoxelGeneratorImpl for HeightmapGenerator {
         };
         let mut spawns = Vec::new();
 
-        for (_rule_idx, rule) in rules.0.iter().enumerate() {
+        for rule in rules.0.iter() {
             let candidates = jittered_grid_sample(
                 self.seed,
                 chunk_pos,
@@ -423,8 +423,8 @@ impl VoxelGeneratorImpl for HeightmapGenerator {
                     continue;
                 }
 
-                if let Some(slope_max) = rule.slope_max {
-                    if exceeds_slope(
+                if let Some(slope_max) = rule.slope_max
+                    && exceeds_slope(
                         local_x + 1,
                         local_z + 1,
                         heights,
@@ -433,10 +433,9 @@ impl VoxelGeneratorImpl for HeightmapGenerator {
                     ) {
                         continue;
                     }
-                }
 
-                if !rule.allowed_biomes.is_empty() {
-                    if let (Some(moisture_map), Some(biome_rules)) =
+                if !rule.allowed_biomes.is_empty()
+                    && let (Some(moisture_map), Some(biome_rules)) =
                         (&self.moisture_map, &self.biome_rules)
                     {
                         let biome = select_biome_at_pos(
@@ -451,7 +450,6 @@ impl VoxelGeneratorImpl for HeightmapGenerator {
                             continue;
                         }
                     }
-                }
 
                 spawns.push(WorldObjectSpawn {
                     object_id: rule.object_id.clone(),

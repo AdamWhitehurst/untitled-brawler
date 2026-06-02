@@ -214,7 +214,7 @@ pub fn update_transition_state(
     player_query: Query<Entity, (With<Predicted>, With<protocol::CharacterMarker>)>,
 ) {
     match state.phase {
-        TransitionPhase::Idle => return,
+        TransitionPhase::Idle => (),
 
         TransitionPhase::Cleanup => {
             let Some(target) = &state.target_map else {

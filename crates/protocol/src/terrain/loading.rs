@@ -120,7 +120,7 @@ pub(super) fn insert_terrain_defs(
         .iter()
         .filter_map(|h| h.clone().try_typed::<TerrainDef>().ok())
         .map(|h| h.id());
-    let terrains = collect_terrain_defs(ids, &*terrain_assets, &*asset_server);
+    let terrains = collect_terrain_defs(ids, &terrain_assets, &asset_server);
     info!("Loaded {} terrain definitions", terrains.len());
     commands.insert_resource(TerrainDefRegistry { terrains });
 }

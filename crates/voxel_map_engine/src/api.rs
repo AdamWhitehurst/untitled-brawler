@@ -4,7 +4,7 @@ use ndshape::Shape;
 
 use crate::config::VoxelGenerator;
 use crate::instance::VoxelMapInstance;
-use crate::raycast::{voxel_line_traversal, VoxelRaycastResult};
+use crate::raycast::{VoxelRaycastResult, voxel_line_traversal};
 use crate::types::WorldVoxel;
 
 /// SystemParam for reading/writing voxels on any map instance.
@@ -106,7 +106,7 @@ impl VoxelWorld<'_, '_> {
         voxel_line_traversal(start, end, |voxel_pos, t, face| {
             let voxel = lookup_voxel(
                 voxel_pos,
-                &instance,
+                instance,
                 generator,
                 &mut cached_chunk,
                 chunk_size,

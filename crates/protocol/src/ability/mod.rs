@@ -17,11 +17,11 @@ pub use lifecycle::expire_buffs;
 pub use loading::DefaultAbilitySlots;
 pub use plugin::AbilityPlugin;
 pub use types::{
-    AbilityAsset, AbilityBulletOf, AbilityBullets, AbilityCooldowns, AbilityDef, AbilityDefs,
-    AbilityEffect, AbilityId, AbilityManifest, AbilityPhase, AbilityPhases, AbilityProjectileSpawn,
-    AbilitySlots, ActiveAbility, ActiveAbilityHitboxes, ActiveBuff, ActiveBuffs, ActiveShield,
-    AoEHitbox, Condition, ConditionalEffect, ConditionalEffects, EffectTarget, EffectTrigger,
-    ForceFrame, HitTargets, HitboxOf, InputEffect, MeleeHitbox, OnEndEffects, OnHitEffectDefs,
-    OnHitEffects, OnInputEffects, OnTickEffects, ProjectileSpawnEffect, TickEffect,
-    WhileActiveEffects, facing_direction,
+    facing_direction, AbilityAsset, AbilityBulletOf, AbilityBullets, AbilityCooldowns, AbilityDef,
+    AbilityDefs, AbilityEffect, AbilityId, AbilityManifest, AbilityPhase, AbilityPhases,
+    AbilityProjectileSpawn, AbilitySlots, ActiveAbility, ActiveAbilityHitboxes, ActiveBuff,
+    ActiveBuffs, ActiveShield, AoEHitbox, Condition, ConditionalEffect, ConditionalEffects,
+    EffectTarget, EffectTrigger, ForceFrame, HitTargets, HitboxOf, InputEffect, MeleeHitbox,
+    OnEndEffects, OnHitEffectDefs, OnHitEffects, OnInputEffects, OnTickEffects,
+    ProjectileSpawnEffect, TickEffect, WhileActiveEffects,
 };

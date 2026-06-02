@@ -126,7 +126,7 @@ pub(super) fn insert_world_object_defs(
         .iter()
         .filter_map(|h| h.clone().try_typed::<WorldObjectDef>().ok())
         .map(|h| h.id());
-    let objects = collect_object_defs(ids, &*object_assets, &*asset_server);
+    let objects = collect_object_defs(ids, &object_assets, &asset_server);
     info!("Loaded {} world object definitions", objects.len());
     commands.insert_resource(WorldObjectDefRegistry { objects });
 }
@@ -175,8 +175,8 @@ pub(super) fn reload_world_object_defs(
     }
     registry.objects = collect_object_defs(
         object_assets.iter().map(|(id, _)| id),
-        &*object_assets,
-        &*asset_server,
+        &object_assets,
+        &asset_server,
     );
     info!(
         "Hot-reloaded {} world object definitions",
