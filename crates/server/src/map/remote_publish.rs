@@ -9,8 +9,8 @@ use nostr_client::BlobRef;
 use nostr_map_persistence::{
     build_signed_map_manifest_event, encode_chunk_entities_payload, encode_chunk_payload,
     encode_map_entities_payload, encode_map_meta_payload, finalize_manifest, upload_publish_slot,
-    ManifestHash, MapManifestSigner, MapPersistenceRejection, MapRevision,
-    NostrManifestPublishStore, PayloadClass, PayloadKey, PayloadSlotState,
+    ManifestHash, ManifestPayloadDescriptor, ManifestPayloadSlot, MapManifestSigner,
+    MapPersistenceRejection, MapRevision, NostrManifestPublishStore, PayloadClass, PayloadKey,
 };
 use persistence::{
     AsyncStore, AsyncStoreBackend, PendingAsyncStoreOps, PersistenceError, SaveOpId, Store,
@@ -22,8 +22,8 @@ use voxel_map_engine::prelude::{ChunkSaveCompleted, ChunkSaveFailed};
 
 use crate::persistence::{
     FsAcceptedMapHeadStore, FsLocalMapHeadStore, FsLocalUnpublishedPublishDraftStore,
-    FsRemotePublishJournalStore, LocalMapHead, LocalUnpublishedPublishDraft, MapMeta,
-    RemotePublishJournal, RemotePublishStatus, ServerMapPublishDraft,
+    FsMapChangeSetStore, FsRemotePublishJournalStore, LocalMapHead, LocalUnpublishedPublishDraft,
+    MapChangeSet, MapMeta, RemotePublishJournal, RemotePublishStatus, ServerMapPublishDraft,
 };
 
 /// Identifies which persisted map payload completed a filesystem save.
@@ -394,6 +394,38 @@ pub async fn prepare_server_map_publish_entry(
     })
 }
 
+/// Removes the keys a successfully-published journal entry carried from the durable change-set, so
+/// each candidate publishes once. Candidates re-edited after the draft was built are re-added by
+/// the next debounced save, so they are not lost.
+fn clear_published_change_set_keys(
+    change_set: &mut MapChangeSet,
+    payloads: &[ManifestPayloadDescriptor],
+) {
+    for descriptor in payloads {
+        match (&descriptor.class, &descriptor.key) {
+            (PayloadClass::TerrainChunk, PayloadKey::Chunk { x, y, z }) => {
+                change_set.chunk_candidates.remove(&IVec3::new(*x, *y, *z));
+            }
+            (PayloadClass::ChunkEntities, PayloadKey::Chunk { x, y, z }) => {
+                change_set
+                    .chunk_entity_candidates
+                    .remove(&IVec3::new(*x, *y, *z));
+            }
+            (PayloadClass::MapEntities, PayloadKey::Singleton)
+                if !matches!(descriptor.slot, ManifestPayloadSlot::Absent) =>
+            {
+                change_set.map_entities_changed = false;
+            }
+            (PayloadClass::MapMeta, PayloadKey::Singleton)
+                if !matches!(descriptor.slot, ManifestPayloadSlot::Absent) =>
+            {
+                change_set.meta_changed = false;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Applies completed or failed manifest publish operations to durable heads and journal state.
 pub fn apply_publish_results(
     map_id: &MapInstanceId,
@@ -403,6 +435,7 @@ pub fn apply_publish_results(
     accepted_head_store: &FsAcceptedMapHeadStore,
     local_head_store: &FsLocalMapHeadStore,
     journal_store: &FsRemotePublishJournalStore,
+    change_set_store: &FsMapChangeSetStore,
 ) -> Result<(), PersistenceError> {
     while let Some(manifest_hash) = publish_ops.completed_saves.first().copied() {
         let entry_index = journal
@@ -428,6 +461,21 @@ pub fn apply_publish_results(
                 .local_revision_number,
             "remote manifest publish succeeded; advanced map heads"
         );
+        // Heads are committed above; clear the published candidates so they don't republish. A
+        // failure here only causes a harmless redundant republish, so log rather than unwind.
+        match change_set_store.load(&()) {
+            Ok(loaded) => {
+                let mut change_set = loaded.unwrap_or_default();
+                clear_published_change_set_keys(
+                    &mut change_set,
+                    &journal.entries[entry_index].payloads,
+                );
+                if let Err(error) = change_set_store.save(&(), &change_set) {
+                    error!(?map_id, ?error, "failed to clear change-set after publish");
+                }
+            }
+            Err(error) => error!(?map_id, ?error, "failed to load change-set after publish"),
+        }
         publish_ops.completed_saves.remove(0);
         worker.in_flight_by_map.remove(map_id);
     }
@@ -693,6 +741,7 @@ pub fn poll_remote_publish_journal(
         &StoreBackend<MapInstanceId, RemotePublishJournal, FsRemotePublishJournalStore>,
         &StoreBackend<(), MapRevision, FsAcceptedMapHeadStore>,
         &StoreBackend<(), LocalMapHead, FsLocalMapHeadStore>,
+        &StoreBackend<(), MapChangeSet, FsMapChangeSetStore>,
         &AsyncStoreBackend<ManifestHash, String, ServerManifestPublishStore>,
         &mut RemotePublishJournal,
         &mut PendingAsyncStoreOps<ManifestHash, String>,
@@ -703,6 +752,7 @@ pub fn poll_remote_publish_journal(
         journal_store,
         accepted_head_store,
         local_head_store,
+        change_set_store,
         publish_store,
         mut journal,
         mut publish_ops,
@@ -717,6 +767,7 @@ pub fn poll_remote_publish_journal(
             &accepted_head_store.0,
             &local_head_store.0,
             &journal_store.0,
+            &change_set_store.0,
         ) {
             error!(
                 ?map_id,
@@ -865,4 +916,65 @@ pub fn recover_unpublished_publish_drafts(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn chunk_descriptor(class: PayloadClass, x: i32, y: i32, z: i32) -> ManifestPayloadDescriptor {
+        ManifestPayloadDescriptor {
+            class,
+            key: PayloadKey::Chunk { x, y, z },
+            slot: ManifestPayloadSlot::Tombstoned,
+            schema_version: 1,
+        }
+    }
+
+    fn singleton_descriptor(
+        class: PayloadClass,
+        slot: ManifestPayloadSlot,
+    ) -> ManifestPayloadDescriptor {
+        ManifestPayloadDescriptor {
+            class,
+            key: PayloadKey::Singleton,
+            slot,
+            schema_version: 1,
+        }
+    }
+
+    #[test]
+    fn clear_published_keys_removes_only_published_candidates() {
+        let mut change_set = MapChangeSet::default();
+        change_set
+            .chunk_candidates
+            .extend([IVec3::new(1, 0, 0), IVec3::new(2, 0, 0)]);
+        change_set
+            .chunk_entity_candidates
+            .extend([IVec3::new(3, 0, 0), IVec3::new(4, 0, 0)]);
+        change_set.map_entities_changed = true;
+        change_set.meta_changed = true;
+
+        let payloads = vec![
+            chunk_descriptor(PayloadClass::TerrainChunk, 1, 0, 0),
+            chunk_descriptor(PayloadClass::ChunkEntities, 3, 0, 0),
+            // Published map-entities slot clears the flag.
+            singleton_descriptor(PayloadClass::MapEntities, ManifestPayloadSlot::Empty),
+            // Absent meta slot was not published, so its flag is preserved.
+            singleton_descriptor(PayloadClass::MapMeta, ManifestPayloadSlot::Absent),
+        ];
+        clear_published_change_set_keys(&mut change_set, &payloads);
+
+        assert_eq!(
+            change_set.chunk_candidates,
+            HashSet::from([IVec3::new(2, 0, 0)])
+        );
+        assert_eq!(
+            change_set.chunk_entity_candidates,
+            HashSet::from([IVec3::new(4, 0, 0)])
+        );
+        assert!(!change_set.map_entities_changed);
+        assert!(change_set.meta_changed);
+    }
 }

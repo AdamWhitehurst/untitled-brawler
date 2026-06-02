@@ -409,6 +409,9 @@ fn remote_publish_retry_keeps_deterministic_manifest_hash() {
         &server::persistence::FsRemotePublishJournalStore {
             save_root: dir.path().to_path_buf(),
         },
+        &server::persistence::FsMapChangeSetStore {
+            map_dir: map_dir.clone(),
+        },
     )
     .expect("publish failure state persists");
 
@@ -454,6 +457,9 @@ fn remote_publish_success_advances_accepted_and_local_heads() {
         &local_store,
         &server::persistence::FsRemotePublishJournalStore {
             save_root: dir.path().to_path_buf(),
+        },
+        &server::persistence::FsMapChangeSetStore {
+            map_dir: map_dir.clone(),
         },
     )
     .expect("publish success persists");

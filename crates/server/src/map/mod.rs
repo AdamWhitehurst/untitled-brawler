@@ -586,6 +586,11 @@ fn save_dirty_chunks_debounced(
         Option<&StoreBackend<(), LocalMapHead, FsLocalMapHeadStore>>,
         Option<&RemotePublishJournal>,
         Option<&remote_publish::PendingRemotePublishDeltas>,
+        (
+            &VoxelGenerator,
+            &StoreBackend<IVec3, ChunkFileEnvelope, FsChunkStore>,
+            &StoreBackend<IVec3, Vec<WorldObjectSpawn>, FsChunkEntitiesStore>,
+        ),
     )>,
     entity_query: Query<(
         &MapSaveTarget,
@@ -594,6 +599,15 @@ fn save_dirty_chunks_debounced(
         Option<&RespawnPoint>,
     )>,
     respawn_query: Query<(&Position, &MapInstanceId), With<RespawnPoint>>,
+    chunk_entity_query: Query<(
+        Entity,
+        &ChunkEntityRef,
+        &WorldObjectId,
+        &Position,
+        Option<&ActiveTransformation>,
+        Option<&protocol::Health>,
+        Option<&Rotation>,
+    )>,
     mut save_ids: ResMut<SaveOpIdAllocator>,
     mut pending_publish: ResMut<remote_publish::PendingPublishBySaveId>,
     remote_publish_config: Res<remote_publish::RemoteMapPublishConfig>,
@@ -629,6 +643,7 @@ fn save_dirty_chunks_debounced(
         local_head_store,
         publish_journal,
         pending_deltas,
+        (generator, chunk_store, chunk_entities_store),
     ) in &mut map_query
     {
         if config.save_dir.is_none() {
@@ -636,7 +651,7 @@ fn save_dirty_chunks_debounced(
             continue;
         }
 
-        let saved_chunks = enqueue_dirty_chunks(&mut instance, &mut pending_saves, None);
+        enqueue_dirty_chunks(&mut instance, &mut pending_saves, None);
         let content_dirty: HashSet<IVec3> = instance.content_dirty_chunks.drain().collect();
         let entities_dirty = dirty_state.entities_dirty.remove(map_id);
         let chunk_entities_dirty = dirty_state
@@ -646,10 +661,12 @@ fn save_dirty_chunks_debounced(
 
         // Accumulate genuine edits into the durable change-set (the publish candidate set). It
         // survives restart, so prior-session edits still publish across an F7 gap.
-        if !content_dirty.is_empty() || entities_dirty || !chunk_entities_dirty.is_empty() {
-            let mut change_set = persistence::Store::load(&change_set_store.0, &())
-                .expect("map change-set should load during debounced save")
-                .unwrap_or_default();
+        let dirtied =
+            !content_dirty.is_empty() || entities_dirty || !chunk_entities_dirty.is_empty();
+        let mut change_set = persistence::Store::load(&change_set_store.0, &())
+            .expect("map change-set should load during debounced save")
+            .unwrap_or_default();
+        if dirtied {
             change_set
                 .chunk_candidates
                 .extend(content_dirty.iter().copied());
@@ -672,10 +689,7 @@ fn save_dirty_chunks_debounced(
             generation_version: config.generation_version,
             spawn_points,
         };
-        if matches!(map_id, MapInstanceId::Overworld)
-            && remote_publish_config.enabled
-            && (!content_dirty.is_empty() || entities_dirty)
-        {
+        if matches!(map_id, MapInstanceId::Overworld) && remote_publish_config.enabled && dirtied {
             let save_id = save_ids.allocate();
             let local_head = persistence::Store::load(
                 &local_head_store
@@ -693,24 +707,28 @@ fn save_dirty_chunks_debounced(
                 &pending_publish,
             );
             let map_entities = by_map.get(map_id).cloned().unwrap_or_default();
+            // Source the delta from the durable change-set (not the per-cycle dirty set), so
+            // prior-session edits and reverted-to-generated chunks (tombstones) are captured.
+            let (chunks, chunk_entities) = build_overworld_publish_slots(
+                map_entity,
+                &instance,
+                generator,
+                &chunk_store.0,
+                &chunk_entities_store.0,
+                &chunk_entity_query,
+                &change_set,
+            );
             pending_publish.0.insert(
                 save_id,
                 ServerMapPublishDraft {
                     local_revision_number,
                     meta: nostr_map_persistence::PayloadSlotState::Present(meta.clone()),
-                    chunks: saved_chunks
-                        .iter()
-                        .filter(|(pos, _)| content_dirty.contains(pos))
-                        .cloned()
-                        .map(|(pos, envelope)| {
-                            (
-                                pos,
-                                nostr_map_persistence::PayloadSlotState::Present(envelope),
-                            )
-                        })
-                        .collect(),
-                    chunk_entities: Vec::new(),
-                    map_entities: map_entities_publish_slot(entities_dirty, &map_entities),
+                    chunks,
+                    chunk_entities,
+                    map_entities: map_entities_publish_slot(
+                        change_set.map_entities_changed,
+                        &map_entities,
+                    ),
                 },
             );
             trace!(
@@ -730,6 +748,100 @@ fn save_dirty_chunks_debounced(
 
     dirty_state.is_dirty = false;
     dirty_state.first_dirty_time = None;
+}
+
+/// Classifies the overworld change-set into publish slots: terrain that still differs from
+/// generated terrain is `Present` (current bytes), terrain reverted to generated is `Tombstoned`
+/// (and the on-disk file is deleted so it regenerates from seed), and per-chunk world objects are
+/// `Present` (current list). A loaded chunk's objects come from live state; an evicted chunk's
+/// come from disk (synced on eviction). A candidate that is neither loaded nor on disk is skipped.
+#[allow(clippy::type_complexity)]
+fn build_overworld_publish_slots(
+    map_entity: Entity,
+    instance: &VoxelMapInstance,
+    generator: &VoxelGenerator,
+    chunk_store: &FsChunkStore,
+    chunk_entities_store: &FsChunkEntitiesStore,
+    chunk_entity_query: &Query<(
+        Entity,
+        &ChunkEntityRef,
+        &WorldObjectId,
+        &Position,
+        Option<&ActiveTransformation>,
+        Option<&protocol::Health>,
+        Option<&Rotation>,
+    )>,
+    change_set: &MapChangeSet,
+) -> (
+    Vec<(
+        IVec3,
+        nostr_map_persistence::PayloadSlotState<ChunkFileEnvelope>,
+    )>,
+    Vec<(
+        IVec3,
+        nostr_map_persistence::PayloadSlotState<Vec<WorldObjectSpawn>>,
+    )>,
+) {
+    use nostr_map_persistence::PayloadSlotState;
+
+    let mut sorted_chunks: Vec<IVec3> = change_set.chunk_candidates.iter().copied().collect();
+    sorted_chunks.sort_by_key(|pos| (pos.x, pos.y, pos.z));
+    let mut chunks = Vec::new();
+    for pos in sorted_chunks {
+        if instance.chunk_matches_generated(pos, generator.0.as_ref()) {
+            chunks.push((pos, PayloadSlotState::Tombstoned));
+            if let Err(error) = chunk_store.delete(&pos) {
+                error!(?pos, ?error, "failed to delete reverted overworld chunk");
+            }
+            continue;
+        }
+        let Some(data) = instance.get_chunk_data(pos) else {
+            trace!(
+                ?pos,
+                "overworld candidate differs from generated but is not loaded; skipping"
+            );
+            continue;
+        };
+        chunks.push((
+            pos,
+            PayloadSlotState::Present(ChunkFileEnvelope {
+                version: CHUNK_SAVE_VERSION,
+                chunk_size: instance.chunk_size,
+                data: data.clone(),
+            }),
+        ));
+    }
+
+    let mut sorted_entities: Vec<IVec3> =
+        change_set.chunk_entity_candidates.iter().copied().collect();
+    sorted_entities.sort_by_key(|pos| (pos.x, pos.y, pos.z));
+    let mut chunk_entities = Vec::new();
+    for pos in sorted_entities {
+        let spawns = if instance.get_chunk_data(pos).is_some() {
+            crate::chunk_entities::collect_chunk_entity_spawns(
+                map_entity,
+                pos,
+                None,
+                None,
+                chunk_entity_query,
+            )
+        } else {
+            match persistence::Store::load(chunk_entities_store, &pos) {
+                Ok(loaded) => loaded.unwrap_or_default(),
+                Err(error) => {
+                    error!(
+                        ?pos,
+                        ?error,
+                        "failed to load evicted overworld chunk entities; publishing empty"
+                    );
+                    Vec::new()
+                }
+            }
+        };
+        chunk_entities.push((pos, PayloadSlotState::Present(spawns)));
+    }
+
+    (chunks, chunk_entities)
 }
 
 /// Selects the publish slot for map-level entities.
