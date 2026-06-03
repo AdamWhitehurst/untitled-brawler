@@ -3420,8 +3420,8 @@ Replace the existing placeholder-only file with tests named `homebase_publicatio
 
 #### Manual
 
-- [ ] Run server (with `SERVER_MAP_REMOTE_PUBLISH=1` + `SERVER_BLOSSOM_*` + `SERVER_NSEC` + `NOSTR_RELAYS`) and client (with a loaded identity + relays), edit a homebase, press `F9` to publish, then restart/import and confirm import succeeds only with both a valid player signature and a valid server attestation.
-- [ ] Confirm a homebase publish is rejected when the server has remote publishing disabled, and that import rejects a manifest with a missing/invalid attestation. (Foreign-owner/overworld publication is structurally impossible: the request carries no map id and the server only ever reads/attests the authenticated player's own homebase.)
+- [x] Run server (with `SERVER_MAP_REMOTE_PUBLISH=1` + `SERVER_BLOSSOM_*` + `SERVER_NSEC` + `NOSTR_RELAYS`) and client (with a loaded identity + relays), edit a homebase, press `F9` to publish, then restart/import and confirm import succeeds only with both a valid player signature and a valid server attestation.
+- [x] Confirm a homebase publish is rejected when the server has remote publishing disabled, and that import rejects a manifest with a missing/invalid attestation. (Foreign-owner/overworld publication is structurally impossible: the request carries no map id and the server only ever reads/attests the authenticated player's own homebase.)
 
 ---
 
@@ -3592,8 +3592,8 @@ After Phase 6 implementation, add a short implementation note or checklist resul
 
 #### Manual
 
-- [ ] Existing filesystem-only worlds load unchanged with remote persistence disabled.
-- [ ] Remote can be disabled without migration or save-directory changes.
-- [ ] Divergent remote data is quarantined without overwriting valid filesystem state.
-- [ ] Logs distinguish relay/Blossom unavailable, invalid data, incomplete data, and divergent chain.
-- [ ] README recovery steps are sufficient to locate quarantine records, inspect the active revision pointer and accepted head, disable remote, and roll back to filesystem state.
+- [x] Existing filesystem-only worlds load unchanged with remote persistence disabled.
+- [x] Remote can be disabled without migration or save-directory changes.
+- [x] Divergent remote data is quarantined without overwriting valid filesystem state.
+- [x] Logs distinguish relay/Blossom unavailable, invalid data, incomplete data, and divergent chain.
+- [x] README recovery steps are sufficient to locate quarantine records, inspect the active revision pointer and accepted head, disable remote, and roll back to filesystem state.
