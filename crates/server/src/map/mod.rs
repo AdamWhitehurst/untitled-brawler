@@ -659,25 +659,6 @@ fn save_dirty_chunks_debounced(
             .remove(map_id)
             .unwrap_or_default();
 
-        // Accumulate genuine edits into the durable change-set (the publish candidate set). It
-        // survives restart, so prior-session edits still publish across an F7 gap.
-        let dirtied =
-            !content_dirty.is_empty() || entities_dirty || !chunk_entities_dirty.is_empty();
-        let mut change_set = persistence::Store::load(&change_set_store.0, &())
-            .expect("map change-set should load during debounced save")
-            .unwrap_or_default();
-        if dirtied {
-            change_set
-                .chunk_candidates
-                .extend(content_dirty.iter().copied());
-            change_set
-                .chunk_entity_candidates
-                .extend(chunk_entities_dirty.iter().copied());
-            change_set.map_entities_changed |= entities_dirty;
-            persistence::Store::save(&change_set_store.0, &(), &change_set)
-                .expect("map change-set should persist during debounced save");
-        }
-
         let spawn_points: Vec<Vec3> = respawn_query
             .iter()
             .filter(|(_, mid)| *mid == map_id)
@@ -689,6 +670,35 @@ fn save_dirty_chunks_debounced(
             generation_version: config.generation_version,
             spawn_points,
         };
+        // Meta differs from the last persisted meta when seed/generation/spawn-points change.
+        // Drives the homebase meta delta (overworld always sends meta as Present), so a
+        // post-genesis spawn-point change still republishes rather than being silently dropped.
+        let meta_changed = persistence::Store::load(&meta_store.0, &())
+            .expect("map meta should load during debounced save")
+            .as_ref()
+            != Some(&meta);
+
+        // Accumulate genuine edits into the durable change-set (the publish candidate set). It
+        // survives restart, so prior-session edits still publish across an F7 gap.
+        let dirtied = !content_dirty.is_empty()
+            || entities_dirty
+            || !chunk_entities_dirty.is_empty()
+            || meta_changed;
+        let mut change_set = persistence::Store::load(&change_set_store.0, &())
+            .expect("map change-set should load during debounced save")
+            .unwrap_or_default();
+        if dirtied {
+            change_set
+                .chunk_candidates
+                .extend(content_dirty.iter().copied());
+            change_set
+                .chunk_entity_candidates
+                .extend(chunk_entities_dirty.iter().copied());
+            change_set.map_entities_changed |= entities_dirty;
+            change_set.meta_changed |= meta_changed;
+            persistence::Store::save(&change_set_store.0, &(), &change_set)
+                .expect("map change-set should persist during debounced save");
+        }
         if matches!(map_id, MapInstanceId::Overworld) && remote_publish_config.enabled && dirtied {
             let save_id = save_ids.allocate();
             let local_head = persistence::Store::load(
@@ -718,6 +728,21 @@ fn save_dirty_chunks_debounced(
                 &chunk_entity_query,
                 &change_set,
             );
+            // build_overworld_publish_slots already deleted the reverted (tombstoned) chunks'
+            // files; drop their just-enqueued writes too, otherwise the async save drain runs
+            // after the delete and recreates the file.
+            let tombstoned: HashSet<IVec3> = chunks
+                .iter()
+                .filter(|(_, slot)| {
+                    matches!(slot, nostr_map_persistence::PayloadSlotState::Tombstoned)
+                })
+                .map(|(pos, _)| *pos)
+                .collect();
+            if !tombstoned.is_empty() {
+                pending_saves
+                    .queue
+                    .retain(|save| !tombstoned.contains(&save.position));
+            }
             pending_publish.0.insert(
                 save_id,
                 ServerMapPublishDraft {

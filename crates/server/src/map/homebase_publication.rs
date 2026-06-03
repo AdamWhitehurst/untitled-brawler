@@ -391,6 +391,9 @@ pub struct InFlightHomebasePublish {
     published_entity_chunks: HashSet<IVec3>,
     published_meta: bool,
     published_map_entities: bool,
+    /// Unix second after which an unconfirmed publish is evicted, so the in-flight map cannot
+    /// grow unboundedly when clients never confirm (crash, disconnect, F7 spam).
+    expires_at: u64,
 }
 
 /// Homebase publishes granted but not yet confirmed published by the client, keyed by the
@@ -477,6 +480,17 @@ pub fn poll_homebase_attestation_uploads(
     mut in_flight: ResMut<InFlightHomebasePublishes>,
     mut responders: Query<&mut MessageSender<HomebaseAttestationResponse>>,
 ) {
+    // Evict in-flight publishes whose confirmation window has lapsed, bounding the map when
+    // clients never confirm. A clock error skips eviction this tick (entries are still bounded by
+    // the next successful tick).
+    match now_unix_seconds() {
+        Ok(now) => in_flight.0.retain(|_, publish| publish.expires_at > now),
+        Err(error) => trace!(
+            ?error,
+            "skipping in-flight publish eviction; clock unavailable"
+        ),
+    }
+
     let mut index = 0;
     while index < pending.tasks.len() {
         let Some(response) = bevy::tasks::futures::check_ready(&mut pending.tasks[index].2) else {
@@ -485,6 +499,9 @@ pub fn poll_homebase_attestation_uploads(
         };
         let (client_entity, snapshot, _) = pending.tasks.swap_remove(index);
         if let HomebaseAttestationResponse::Granted { manifest_hash, .. } = &response {
+            let expires_at = now_unix_seconds()
+                .map(|now| now.saturating_add(HOMEBASE_ATTESTATION_TTL_SECONDS))
+                .unwrap_or(u64::MAX);
             in_flight.0.insert(
                 *manifest_hash,
                 InFlightHomebasePublish {
@@ -498,6 +515,7 @@ pub fn poll_homebase_attestation_uploads(
                     published_entity_chunks: snapshot.published_entity_chunks,
                     published_meta: snapshot.published_meta,
                     published_map_entities: snapshot.published_map_entities,
+                    expires_at,
                 },
             );
         }
@@ -517,6 +535,13 @@ fn reply_attestation(
             "homebase publication requester has no response sender"
         ),
     }
+}
+
+/// Whether a confirmation for `candidate_revision` should advance the accepted head past
+/// `current`. Genesis (`None`) always advances; otherwise the candidate must be strictly newer,
+/// so a stale/out-of-order/replayed confirmation cannot move the head backwards.
+fn confirmation_advances_head(current: Option<&MapRevision>, candidate_revision: u64) -> bool {
+    current.is_none_or(|head| candidate_revision > head.revision)
 }
 
 /// Removes the keys a confirmed publish carried from the durable change-set. Candidates edited
@@ -580,12 +605,31 @@ pub fn handle_homebase_published(
             }
 
             // Heads live at the map's top-level dir, not as a component on the homebase entity.
-            let canonical_map_dir = map_save_dir(&save_path.0, &map_id);
-            if let Err(error) = (FsAcceptedMapHeadStore {
-                map_dir: Arc::new(canonical_map_dir),
-            })
-            .save(&(), &publish.revision)
-            {
+            let head_store = FsAcceptedMapHeadStore {
+                map_dir: Arc::new(map_save_dir(&save_path.0, &map_id)),
+            };
+            let current_head = match head_store.load(&()) {
+                Ok(head) => head,
+                Err(error) => {
+                    error!(
+                        ?error,
+                        "failed to load homebase accepted head on confirmation"
+                    );
+                    continue;
+                }
+            };
+            // Advance the head only forward. A stale, out-of-order, or replayed confirmation must
+            // never move it backwards, which would orphan a newer published revision and mis-chain
+            // the next delta's previous_hash.
+            if !confirmation_advances_head(current_head.as_ref(), publish.revision.revision) {
+                warn!(
+                    confirmed = publish.revision.revision,
+                    current = current_head.map(|head| head.revision),
+                    "stale homebase publish confirmation does not advance the accepted head; ignoring"
+                );
+                continue;
+            }
+            if let Err(error) = head_store.save(&(), &publish.revision) {
                 error!(
                     ?error,
                     "failed to advance homebase accepted head on confirmation"
@@ -602,12 +646,26 @@ pub fn handle_homebase_published(
                 );
                 continue;
             };
-            let mut change_set = Store::load(&change_backend.0, &())
-                .expect("change-set should load on homebase publish confirmation")
-                .unwrap_or_default();
+            // The head already advanced; a change-set fs error here is expected (not impossible)
+            // and self-heals on the next publish, so log and continue rather than panic.
+            let mut change_set = match Store::load(&change_backend.0, &()) {
+                Ok(loaded) => loaded.unwrap_or_default(),
+                Err(error) => {
+                    error!(
+                        ?error,
+                        "failed to load change-set on homebase publish confirmation; will self-heal next publish"
+                    );
+                    continue;
+                }
+            };
             apply_publish_confirmation_to_change_set(&mut change_set, &publish);
-            Store::save(&change_backend.0, &(), &change_set)
-                .expect("change-set should persist on homebase publish confirmation");
+            if let Err(error) = Store::save(&change_backend.0, &(), &change_set) {
+                error!(
+                    ?error,
+                    "failed to persist change-set on homebase publish confirmation; will self-heal next publish"
+                );
+                continue;
+            }
 
             info!(
                 ?map_id,
@@ -1074,6 +1132,7 @@ mod tests {
             published_entity_chunks: HashSet::from([IVec3::new(4, 0, 0)]),
             published_meta: true,
             published_map_entities: false,
+            expires_at: u64::MAX,
         };
 
         apply_publish_confirmation_to_change_set(&mut change_set, &publish);
@@ -1090,6 +1149,22 @@ mod tests {
         // Published flag cleared; an un-published flag is preserved.
         assert!(!change_set.meta_changed);
         assert!(change_set.map_entities_changed);
+    }
+
+    #[test]
+    fn confirmation_advances_head_only_forward() {
+        let rev = |n: u64| MapRevision {
+            revision: n,
+            previous_hash: None,
+            manifest_hash: [n as u8; 32],
+        };
+        // Genesis (no head yet) always advances.
+        assert!(confirmation_advances_head(None, 0));
+        // Strictly newer advances.
+        assert!(confirmation_advances_head(Some(&rev(2)), 3));
+        // Equal or older (stale/out-of-order/replayed) must not move the head backwards.
+        assert!(!confirmation_advances_head(Some(&rev(2)), 2));
+        assert!(!confirmation_advances_head(Some(&rev(3)), 1));
     }
 
     #[test]

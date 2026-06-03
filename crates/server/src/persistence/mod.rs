@@ -27,7 +27,7 @@ use voxel_map_engine::persistence::{chunk_file_path, entity_file_path, ChunkFile
 pub(crate) const META_VERSION: u32 = 1;
 
 /// Metadata for a single map instance, saved to `map.meta.bin`.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct MapMeta {
     pub version: u32,
     pub seed: u64,
