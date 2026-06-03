@@ -174,6 +174,42 @@ For restore-only testing without publishing, use `SERVER_MAP_REMOTE_READ=1` with
 
 For manual failure-path testing, add `SERVER_MAP_REMOTE_PUBLISH_FAIL_FIRST=1` to force the first manifest publish to fail after Blossom payload upload.
 
+### Scope, Quarantine, and Recovery
+
+v1 remote persistence covers map/layout data for the Overworld and Homebases only,
+and never progression-bearing client-published state. "Latest" means the latest
+*visible valid descendant* of the local accepted head under the configured relay
+query policy — not a global latest: relays that are down or not configured cannot
+contribute manifests.
+
+Failure handling is split by class (each logged distinctly):
+
+- **Unavailable** (relay query/Blossom fetch failed, timeout): graceful fallback to
+  local filesystem state; nothing is written or blocked.
+- **Invalid / Incomplete / Divergent** (bad signature/attestation, descriptor-root
+  mismatch, blob hash/size mismatch, disallowed Blossom host, missing ancestor
+  manifests, forked revision chain): the map is blocked from remote restore and a
+  quarantine record is written; valid local filesystem state is never overwritten.
+
+Quarantine records are RON files under `worlds/quarantine/<map>/` (override with
+`SERVER_MAP_QUARANTINE_DIR`), named by manifest hash (or `local-invalid-<timestamp>`
+when no hash applies), each recording the map id, owner, and rejection reason.
+
+On-disk layout per map dir (`worlds/overworld/`, `worlds/homebase_<npub>/`):
+`active_revision` (pointer file naming the active materialized revision),
+`revisions/rev-<n>-<hash>/` (immutable materialized snapshots), `staging/`
+(incomplete materialization work, cleaned at startup), and the top-level
+`accepted_head.bin`/`local_head.bin`/`change_set.bin` head files. At startup the
+server validates the active pointer; if it references a missing/incomplete
+revision, it quarantines a record, removes the pointer, and rolls back to the
+top-level filesystem state.
+
+Manual recovery/rollback: stop the server, inspect `worlds/quarantine/` and the
+`active_revision` pointer, unset `SERVER_MAP_REMOTE_READ`/`SERVER_MAP_REMOTE_PUBLISH`
+to run filesystem-only (no migration needed — remote can be disabled at any time),
+and delete `active_revision` to fall back to the legacy top-level save files (or
+point it at a known-good `revisions/` directory).
+
 ### Player-Owned Homebase Publication
 
 A player can publish their own Homebase to Nostr. Because the client cannot

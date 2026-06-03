@@ -14,7 +14,8 @@ use voxel_map_engine::prelude::{Homebase, MapDimensions, VoxelMapConfig};
 use crate::persistence::fs_map_entities::FsMapEntitiesStore;
 use crate::persistence::fs_map_meta::FsMapMetaStore;
 use crate::persistence::{
-    map_save_dir, store_map_dir_for_loading, FsMapChangeSetStore, MapMeta, WorldSavePath,
+    map_save_dir, recover_map_save_dir_for_loading, FsMapChangeSetStore, MapMeta,
+    RemoteMapPersistenceConfig, WorldSavePath,
 };
 
 use super::{MapLoadState, MapPreparation, MapTransitionParams};
@@ -26,6 +27,7 @@ pub fn ensure_map_exists(
     map_state_query: &Query<Ref<MapLoadState>>,
     map_params_query: &Query<(&VoxelMapConfig, &MapDimensions)>,
     save_path: &WorldSavePath,
+    remote_config: &RemoteMapPersistenceConfig,
     map_id: &MapInstanceId,
 ) -> MapPreparation {
     if let Some(&entity) = registry.0.get(map_id) {
@@ -64,6 +66,7 @@ pub fn ensure_map_exists(
             let entity = spawn_homebase_preflight_placeholder_with_stores(
                 commands,
                 save_path,
+                remote_config,
                 *owner,
                 MapLoadState::CheckingPersistence,
             );
@@ -82,15 +85,17 @@ pub fn ensure_map_exists(
 pub fn spawn_homebase_preflight_placeholder_with_stores(
     commands: &mut Commands,
     save_path: &WorldSavePath,
+    remote_config: &RemoteMapPersistenceConfig,
     owner: NostrPublicKey,
     state: MapLoadState,
 ) -> Entity {
     let map_id = MapInstanceId::Homebase { owner };
     let canonical_map_dir = map_save_dir(&save_path.0, &map_id);
-    let map_dir = Arc::new(
-        store_map_dir_for_loading(&canonical_map_dir)
-            .expect("homebase active revision pointer must be valid before preflight"),
-    );
+    let map_dir = Arc::new(recover_map_save_dir_for_loading(
+        remote_config,
+        &map_id,
+        &canonical_map_dir,
+    ));
     commands
         .spawn((
             Homebase,

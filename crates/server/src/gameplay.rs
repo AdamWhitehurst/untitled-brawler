@@ -409,6 +409,7 @@ pub fn process_pending_initial_spawns(
         &voxel_map_engine::prelude::MapDimensions,
     )>,
     save_path: Res<crate::persistence::WorldSavePath>,
+    remote_config: Res<crate::persistence::RemoteMapPersistenceConfig>,
     mut room_registry: ResMut<RoomRegistry>,
     respawn_query: Query<(&Position, &MapInstanceId), With<RespawnPoint>>,
     mut start_senders: Query<&mut MessageSender<protocol::map::MapTransitionStart>>,
@@ -424,6 +425,7 @@ pub fn process_pending_initial_spawns(
         &map_state_query,
         &map_params_query,
         &save_path,
+        &remote_config,
         &MapInstanceId::Overworld,
     );
 

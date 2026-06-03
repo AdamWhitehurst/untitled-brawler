@@ -40,7 +40,7 @@ use voxel_map_engine::prelude::{
 use crate::persistence::fs_map_entities::FsMapEntitiesStore;
 use crate::persistence::fs_map_meta::FsMapMetaStore;
 use crate::persistence::{
-    map_save_dir, store_map_dir_for_loading, FsAcceptedMapHeadStore, FsLocalMapHeadStore,
+    map_save_dir, recover_map_save_dir_for_loading, FsAcceptedMapHeadStore, FsLocalMapHeadStore,
     FsLocalUnpublishedPublishDraftStore, FsMapChangeSetStore, FsRemotePublishJournalStore,
     LocalMapHead, MapChangeSet, MapMeta, RemoteMapPersistenceConfig, RemotePublishJournal,
     ServerMapPublishDraft, WorldSavePath,
@@ -248,14 +248,16 @@ fn init_overworld_entity(
     mut queue: ResMut<PendingMapPreflights>,
     save_path: Res<WorldSavePath>,
     server_identity: Res<nostr_client::NostrKeys>,
+    remote_config: Res<RemoteMapPersistenceConfig>,
     remote_publish_config: Res<remote_publish::RemoteMapPublishConfig>,
     relay_pool: Option<Res<nostr_client::RelayPool>>,
 ) {
     let canonical_map_dir = map_save_dir(&save_path.0, &MapInstanceId::Overworld);
-    let map_dir = Arc::new(
-        store_map_dir_for_loading(&canonical_map_dir)
-            .expect("overworld active revision pointer must be valid before startup"),
-    );
+    let map_dir = Arc::new(recover_map_save_dir_for_loading(
+        &remote_config,
+        &MapInstanceId::Overworld,
+        &canonical_map_dir,
+    ));
     let owner = server_identity.protocol_public_key();
     // Head pointers span revisions, so they live at the map's top-level dir, not inside the
     // active revision snapshot. This keeps the running publish path reading the same heads the

@@ -243,6 +243,8 @@ pub const STAGING_DIR: &str = "staging";
 pub struct RemoteMapPersistenceConfig {
     pub enabled: bool,
     pub fallback_timeout: Duration,
+    /// Directory where rejected/invalid map saves are preserved for manual inspection.
+    pub quarantine_dir: PathBuf,
 }
 
 impl Default for RemoteMapPersistenceConfig {
@@ -250,6 +252,9 @@ impl Default for RemoteMapPersistenceConfig {
         Self {
             enabled: env_flag("SERVER_MAP_REMOTE_READ") || env_flag("SERVER_MAP_REMOTE_PUBLISH"),
             fallback_timeout: Duration::from_secs(5),
+            quarantine_dir: std::env::var("SERVER_MAP_QUARANTINE_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("worlds/quarantine")),
         }
     }
 }
@@ -820,6 +825,155 @@ pub fn cleanup_materialization_staging(save_dir: &Path) -> Result<(), Persistenc
     Ok(())
 }
 
+/// Record describing a rejected/invalid map save preserved for manual inspection.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct QuarantinedMapSave {
+    pub map_id: MapInstanceId,
+    pub owner: Option<protocol::NostrPublicKey>,
+    pub reason: MapPersistenceRejection,
+    pub manifest_hash: Option<ManifestHash>,
+}
+
+impl QuarantinedMapSave {
+    /// Builds a quarantine record from a rejection, deriving the owner from the map id.
+    pub fn from_rejection(map_id: MapInstanceId, reason: MapPersistenceRejection) -> Self {
+        let owner = match &map_id {
+            MapInstanceId::Overworld => None,
+            MapInstanceId::Homebase { owner } => Some(*owner),
+        };
+        Self {
+            map_id,
+            owner,
+            reason,
+            manifest_hash: None,
+        }
+    }
+}
+
+/// Writes a quarantine record (and optional raw manifest bytes) under the configured
+/// quarantine directory without touching the map's live save state.
+pub fn quarantine_rejected_map_save(
+    config: &RemoteMapPersistenceConfig,
+    record: &QuarantinedMapSave,
+    raw_manifest: Option<&[u8]>,
+) -> Result<(), PersistenceError> {
+    let map_dir = map_save_dir(&config.quarantine_dir, &record.map_id);
+    fs::create_dir_all(&map_dir)
+        .map_err(|e| PersistenceError::Serialize(format!("mkdir quarantine dir: {e}")))?;
+
+    let record_name = record
+        .manifest_hash
+        .map(manifest_hash_hex)
+        .unwrap_or_else(|| format!("local-invalid-{}", unix_timestamp_millis()));
+    let record_path = map_dir.join(format!("{record_name}.quarantine.ron"));
+    let record_text = ron::ser::to_string_pretty(record, ron::ser::PrettyConfig::default())
+        .map_err(|e| PersistenceError::Serialize(format!("serialize quarantine record: {e}")))?;
+    write_quarantine_file_atomically(&record_path, record_text.as_bytes())?;
+
+    if let Some(raw_manifest) = raw_manifest {
+        let manifest_path = map_dir.join(format!("{record_name}.manifest.bin"));
+        write_quarantine_file_atomically(&manifest_path, raw_manifest)?;
+    } else {
+        trace!(
+            ?record.map_id,
+            ?record.manifest_hash,
+            "quarantined rejected map save without raw manifest bytes"
+        );
+    }
+    Ok(())
+}
+
+fn write_quarantine_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), PersistenceError> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("quarantine file path must have UTF-8 file name");
+    let tmp_path = path.with_file_name(format!("{file_name}.{}.tmp", std::process::id()));
+    fs::write(&tmp_path, bytes)
+        .map_err(|e| PersistenceError::Serialize(format!("write quarantine tmp: {e}")))?;
+    fs::rename(&tmp_path, path)
+        .map_err(|e| PersistenceError::Serialize(format!("rename quarantine file: {e}")))?;
+    Ok(())
+}
+
+fn unix_timestamp_millis() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock should be after the Unix epoch")
+        .as_millis()
+}
+
+/// Validates that the active revision pointer, when present, references a complete
+/// materialized revision directory.
+pub fn validate_active_revision_pointer(
+    map_save_dir: &Path,
+) -> Result<(), MapPersistenceRejection> {
+    let pointer = active_pointer_path(map_save_dir);
+    if !pointer.exists() {
+        trace!(?pointer, "no active revision pointer to validate");
+        return Ok(());
+    }
+    let name = fs::read_to_string(&pointer).map_err(|e| {
+        MapPersistenceRejection::Filesystem(format!("read active revision pointer: {e}"))
+    })?;
+    let active = map_save_dir.join(REVISIONS_DIR).join(name.trim());
+    if !active.is_dir() {
+        return Err(MapPersistenceRejection::Incomplete(format!(
+            "active revision pointer references missing directory {}",
+            active.display()
+        )));
+    }
+    if !existing_revision_dir_is_complete(&active) {
+        return Err(MapPersistenceRejection::Incomplete(format!(
+            "active revision directory {} is missing its completeness marker",
+            active.display()
+        )));
+    }
+    Ok(())
+}
+
+/// Recovers one map save directory before its stores are installed: removes incomplete
+/// materialization staging, validates the active revision pointer, and quarantines + rolls
+/// back to the top-level filesystem state when the pointer references missing/invalid
+/// materialized data. Returns the directory filesystem stores should load from.
+pub fn recover_map_save_dir_for_loading(
+    config: &RemoteMapPersistenceConfig,
+    map_id: &MapInstanceId,
+    canonical_map_dir: &Path,
+) -> PathBuf {
+    if let Err(error) = cleanup_materialization_staging(canonical_map_dir) {
+        error!(
+            ?map_id,
+            ?canonical_map_dir,
+            ?error,
+            "failed to clean map materialization staging directory"
+        );
+    }
+    match validate_active_revision_pointer(canonical_map_dir) {
+        Ok(()) => {
+            trace!(?map_id, "active map revision pointer validated");
+            store_map_dir_for_loading(canonical_map_dir)
+                .expect("validated active revision pointer must resolve")
+        }
+        Err(rejection) => {
+            warn!(
+                ?map_id,
+                ?rejection,
+                "active revision pointer invalid; quarantining and rolling back to top-level filesystem state"
+            );
+            quarantine_rejected_map_save(
+                config,
+                &QuarantinedMapSave::from_rejection(map_id.clone(), rejection),
+                None,
+            )
+            .expect("quarantine record should be writable during map recovery");
+            fs::remove_file(active_pointer_path(canonical_map_dir))
+                .expect("invalid active revision pointer should be removable");
+            canonical_map_dir.to_path_buf()
+        }
+    }
+}
+
 /// Writes a validated remote save into staging, validates it, and promotes it atomically.
 pub fn materialize_validated_map_save(
     save_dir: &Path,
@@ -1245,6 +1399,140 @@ mod tests {
 
     fn owner(byte: u8) -> NostrPublicKey {
         NostrPublicKey([byte; 32])
+    }
+
+    fn test_quarantine_config(dir: &Path) -> RemoteMapPersistenceConfig {
+        RemoteMapPersistenceConfig {
+            enabled: false,
+            fallback_timeout: Duration::from_secs(1),
+            quarantine_dir: dir.join("quarantine"),
+        }
+    }
+
+    #[test]
+    fn quarantine_rejected_map_save_writes_record_and_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_quarantine_config(dir.path());
+        let record = QuarantinedMapSave {
+            map_id: MapInstanceId::Homebase { owner: owner(7) },
+            owner: Some(owner(7)),
+            reason: MapPersistenceRejection::Divergent("fork".into()),
+            manifest_hash: Some([0xab; 32]),
+        };
+        quarantine_rejected_map_save(&config, &record, Some(b"raw manifest")).unwrap();
+
+        let map_dir = map_save_dir(
+            &config.quarantine_dir,
+            &MapInstanceId::Homebase { owner: owner(7) },
+        );
+        let hash_hex = manifest_hash_hex([0xab; 32]);
+        let record_text =
+            fs::read_to_string(map_dir.join(format!("{hash_hex}.quarantine.ron"))).unwrap();
+        assert!(record_text.contains("Divergent"));
+        assert_eq!(
+            fs::read(map_dir.join(format!("{hash_hex}.manifest.bin"))).unwrap(),
+            b"raw manifest"
+        );
+    }
+
+    #[test]
+    fn quarantine_rejected_map_save_without_hash_uses_local_invalid_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_quarantine_config(dir.path());
+        let record = QuarantinedMapSave::from_rejection(
+            MapInstanceId::Overworld,
+            MapPersistenceRejection::Incomplete("missing dir".into()),
+        );
+        assert!(record.owner.is_none());
+        quarantine_rejected_map_save(&config, &record, None).unwrap();
+
+        let map_dir = map_save_dir(&config.quarantine_dir, &MapInstanceId::Overworld);
+        let records: Vec<_> = fs::read_dir(&map_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(records.len(), 1);
+        assert!(records[0].starts_with("local-invalid-"));
+        assert!(records[0].ends_with(".quarantine.ron"));
+    }
+
+    #[test]
+    fn validate_active_revision_pointer_absent_pointer_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(validate_active_revision_pointer(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn validate_active_revision_pointer_missing_directory_is_incomplete() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(active_pointer_path(dir.path()), "rev-gone").unwrap();
+        assert!(matches!(
+            validate_active_revision_pointer(dir.path()),
+            Err(MapPersistenceRejection::Incomplete(_))
+        ));
+    }
+
+    #[test]
+    fn validate_active_revision_pointer_incomplete_directory_is_incomplete() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(REVISIONS_DIR).join("rev-empty")).unwrap();
+        fs::write(active_pointer_path(dir.path()), "rev-empty").unwrap();
+        assert!(matches!(
+            validate_active_revision_pointer(dir.path()),
+            Err(MapPersistenceRejection::Incomplete(_))
+        ));
+    }
+
+    #[test]
+    fn validate_active_revision_pointer_complete_directory_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let revision_dir = dir.path().join(REVISIONS_DIR).join("rev-full");
+        fs::create_dir_all(&revision_dir).unwrap();
+        fs::write(revision_dir.join("map.meta.bin"), b"meta").unwrap();
+        fs::write(active_pointer_path(dir.path()), "rev-full").unwrap();
+        assert!(validate_active_revision_pointer(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn recover_map_save_dir_quarantines_invalid_pointer_and_falls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_quarantine_config(dir.path());
+        let map_dir = dir.path().join("overworld");
+        fs::create_dir_all(map_dir.join(STAGING_DIR).join("rev-partial.staging-1")).unwrap();
+        fs::write(active_pointer_path(&map_dir), "rev-gone").unwrap();
+
+        let resolved =
+            recover_map_save_dir_for_loading(&config, &MapInstanceId::Overworld, &map_dir);
+
+        assert_eq!(resolved, map_dir, "must roll back to top-level map dir");
+        assert!(
+            !active_pointer_path(&map_dir).exists(),
+            "invalid pointer must be removed so subsequent loads use filesystem state"
+        );
+        assert!(
+            !map_dir
+                .join(STAGING_DIR)
+                .join("rev-partial.staging-1")
+                .exists(),
+            "incomplete staging must be cleaned up"
+        );
+        let quarantine_map_dir = map_save_dir(&config.quarantine_dir, &MapInstanceId::Overworld);
+        assert_eq!(fs::read_dir(quarantine_map_dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn recover_map_save_dir_resolves_valid_pointer() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = test_quarantine_config(dir.path());
+        let map_dir = dir.path().join("overworld");
+        let revision_dir = map_dir.join(REVISIONS_DIR).join("rev-full");
+        fs::create_dir_all(&revision_dir).unwrap();
+        fs::write(revision_dir.join("map.meta.bin"), b"meta").unwrap();
+        fs::write(active_pointer_path(&map_dir), "rev-full").unwrap();
+
+        let resolved =
+            recover_map_save_dir_for_loading(&config, &MapInstanceId::Overworld, &map_dir);
+        assert_eq!(resolved, revision_dir);
     }
 
     #[test]

@@ -13,8 +13,9 @@ use voxel_map_engine::prelude::{MapDimensions, VoxelMapConfig};
 use crate::persistence::fs_map_meta::FsMapMetaStore;
 use crate::persistence::{
     install_active_revision_store_backends, map_save_dir, materialize_validated_map_save,
-    store_map_dir_for_loading, FakeRemoteMapRestores, MapMeta, RemoteMapPersistenceConfig,
-    RemoteMapReadContext, ServerValidatedMapSave, WorldSavePath,
+    quarantine_rejected_map_save, store_map_dir_for_loading, FakeRemoteMapRestores, MapMeta,
+    QuarantinedMapSave, RemoteMapPersistenceConfig, RemoteMapReadContext, ServerValidatedMapSave,
+    WorldSavePath,
 };
 
 use super::{
@@ -97,6 +98,7 @@ pub fn poll_map_persistence_preflight(
                     &mut commands,
                     &mut registry,
                     &save_path,
+                    &remote_config,
                     &preflight.request.target_map_id,
                 ) else {
                     trace!(?preflight.request.target_map_id, "preflight target placeholder was just spawned; waiting for commands to apply");
@@ -135,6 +137,7 @@ pub fn poll_map_persistence_preflight(
                         &registry,
                         &mut map_states,
                         &save_path,
+                        &remote_config,
                         &terrain_registry,
                         &type_registry,
                         entity,
@@ -164,6 +167,7 @@ pub fn poll_map_persistence_preflight(
                     &registry,
                     &mut map_states,
                     &save_path,
+                    &remote_config,
                     &terrain_registry,
                     &type_registry,
                     entity,
@@ -305,6 +309,7 @@ fn finish_preflight_decision(
     registry: &MapRegistry,
     map_states: &mut Query<&mut MapLoadState>,
     save_path: &WorldSavePath,
+    remote_config: &RemoteMapPersistenceConfig,
     terrain_registry: &TerrainDefRegistry,
     type_registry: &AppTypeRegistry,
     entity: Entity,
@@ -316,6 +321,7 @@ fn finish_preflight_decision(
         registry,
         map_states,
         save_path,
+        remote_config,
         terrain_registry,
         type_registry,
         &preflight.request,
@@ -338,6 +344,7 @@ pub fn commit_ready_map_preflights(
     map_state_query: Query<Ref<MapLoadState>>,
     map_params_query: Query<(&VoxelMapConfig, &MapDimensions)>,
     save_path: Res<WorldSavePath>,
+    remote_config: Res<RemoteMapPersistenceConfig>,
     mut room_registry: ResMut<RoomRegistry>,
     mut senders: Query<&mut MessageSender<MapTransitionStart>>,
     respawn_query: Query<(&avian3d::prelude::Position, &MapInstanceId), With<RespawnPoint>>,
@@ -366,6 +373,7 @@ pub fn commit_ready_map_preflights(
             &map_state_query,
             &map_params_query,
             &save_path,
+            &remote_config,
             &preflight.request.target_map_id,
         ) {
             MapPreparation::Ready {
@@ -408,6 +416,7 @@ fn ensure_preflight_target_registered(
     commands: &mut Commands,
     registry: &mut MapRegistry,
     save_path: &WorldSavePath,
+    remote_config: &RemoteMapPersistenceConfig,
     target_map_id: &MapInstanceId,
 ) -> Option<Entity> {
     if let Some(&entity) = registry.0.get(target_map_id) {
@@ -419,6 +428,7 @@ fn ensure_preflight_target_registered(
             let entity = super::spawn_homebase_preflight_placeholder_with_stores(
                 commands,
                 save_path,
+                remote_config,
                 *owner,
                 MapLoadState::CheckingPersistence,
             );
@@ -434,6 +444,7 @@ fn apply_preflight_result(
     registry: &MapRegistry,
     map_states: &mut Query<&mut MapLoadState>,
     save_path: &WorldSavePath,
+    remote_config: &RemoteMapPersistenceConfig,
     terrain_registry: &TerrainDefRegistry,
     type_registry: &AppTypeRegistry,
     request: &PendingMapPreflight,
@@ -472,14 +483,16 @@ fn apply_preflight_result(
             let map_entity = registry.get(&request.target_map_id);
             let map_save_dir = map_save_dir(&save_path.0, &request.target_map_id);
             if let Err(error) = materialize_validated_map_save(&map_save_dir, &save) {
-                block_preflight_target(
-                    registry,
-                    map_states,
+                let rejection = MapPersistenceRejection::Filesystem(format!(
+                    "materialize remote save: {error}"
+                ));
+                quarantine_blocked_preflight(
+                    remote_config,
                     &request.target_map_id,
-                    MapPersistenceRejection::Filesystem(format!(
-                        "materialize remote save: {error}"
-                    )),
+                    &rejection,
+                    Some(save.revision.manifest_hash),
                 );
+                block_preflight_target(registry, map_states, &request.target_map_id, rejection);
                 return;
             }
             if let Err(error) =
@@ -508,8 +521,29 @@ fn apply_preflight_result(
             );
         }
         MapPersistencePreflightDecision::Blocked(rejection) => {
+            quarantine_blocked_preflight(remote_config, &request.target_map_id, &rejection, None);
             block_preflight_target(registry, map_states, &request.target_map_id, rejection);
         }
+    }
+}
+
+/// Preserves a quarantine record for invalid/divergent/incomplete remote data that blocked a
+/// map, leaving valid filesystem state untouched for manual recovery.
+fn quarantine_blocked_preflight(
+    remote_config: &RemoteMapPersistenceConfig,
+    map_id: &MapInstanceId,
+    rejection: &MapPersistenceRejection,
+    manifest_hash: Option<nostr_map_persistence::ManifestHash>,
+) {
+    let mut record = QuarantinedMapSave::from_rejection(map_id.clone(), rejection.clone());
+    record.manifest_hash = manifest_hash;
+    if let Err(error) = quarantine_rejected_map_save(remote_config, &record, None) {
+        error!(
+            ?map_id,
+            ?rejection,
+            ?error,
+            "failed to write quarantine record for blocked map"
+        );
     }
 }
 

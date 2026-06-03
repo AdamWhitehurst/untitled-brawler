@@ -5,7 +5,7 @@ use protocol::map::{MapInstanceId, PendingTransition};
 use protocol::{MapRegistry, NostrPublicKey};
 use server::map::preparation::ensure_map_exists;
 use server::map::{MapLoadState, MapPreparation, PendingMapSwitchPreflight, RoomRegistry};
-use server::persistence::WorldSavePath;
+use server::persistence::{RemoteMapPersistenceConfig, WorldSavePath};
 use voxel_map_engine::prelude::{ChunkTicket, MapDimensions, VoxelMapConfig};
 
 fn owner(byte: u8) -> NostrPublicKey {
@@ -18,6 +18,7 @@ fn map_transition_registered_map_checking_persistence_is_not_usable() {
     app.add_plugins(MinimalPlugins);
     app.init_resource::<MapRegistry>();
     app.init_resource::<WorldSavePath>();
+    app.init_resource::<RemoteMapPersistenceConfig>();
     let map_entity = app
         .world_mut()
         .spawn((MapInstanceId::Overworld, MapLoadState::CheckingPersistence))
@@ -32,13 +33,15 @@ fn map_transition_registered_map_checking_persistence_is_not_usable() {
              mut registry: ResMut<MapRegistry>,
              states: Query<Ref<MapLoadState>>,
              params: Query<(&VoxelMapConfig, &MapDimensions)>,
-             save_path: Res<WorldSavePath>| {
+             save_path: Res<WorldSavePath>,
+             remote_config: Res<RemoteMapPersistenceConfig>| {
                 let preparation = ensure_map_exists(
                     &mut commands,
                     &mut registry,
                     &states,
                     &params,
                     &save_path,
+                    &remote_config,
                     &MapInstanceId::Overworld,
                 );
                 assert!(matches!(preparation, MapPreparation::Pending));
@@ -53,6 +56,7 @@ fn map_transition_blocked_map_preparation_preserves_rejection() {
     app.add_plugins(MinimalPlugins);
     app.init_resource::<MapRegistry>();
     app.init_resource::<WorldSavePath>();
+    app.init_resource::<RemoteMapPersistenceConfig>();
     let map_entity = app
         .world_mut()
         .spawn((
@@ -72,13 +76,15 @@ fn map_transition_blocked_map_preparation_preserves_rejection() {
              mut registry: ResMut<MapRegistry>,
              states: Query<Ref<MapLoadState>>,
              params: Query<(&VoxelMapConfig, &MapDimensions)>,
-             save_path: Res<WorldSavePath>| {
+             save_path: Res<WorldSavePath>,
+             remote_config: Res<RemoteMapPersistenceConfig>| {
                 let preparation = ensure_map_exists(
                     &mut commands,
                     &mut registry,
                     &states,
                     &params,
                     &save_path,
+                    &remote_config,
                     &MapInstanceId::Overworld,
                 );
                 assert!(matches!(preparation, MapPreparation::Blocked(_)));

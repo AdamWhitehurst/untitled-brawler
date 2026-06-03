@@ -42,7 +42,10 @@ pub enum RemotePersistenceError {
 
 impl From<RemotePersistenceError> for MapPersistenceRejection {
     fn from(value: RemotePersistenceError) -> Self {
+        use nostr_client::blobs::BlobReadError;
+        use nostr_client::events::NostrEventError;
         match value {
+            RemotePersistenceError::Invalid(message) => Self::Invalid(message),
             RemotePersistenceError::Divergent(message) => Self::Divergent(message),
             RemotePersistenceError::MissingAncestor(hash) => {
                 Self::Incomplete(format!("missing ancestor manifest {hash}"))
@@ -50,7 +53,31 @@ impl From<RemotePersistenceError> for MapPersistenceRejection {
             RemotePersistenceError::AmbiguousAncestor(hash) => {
                 Self::Divergent(format!("ambiguous ancestor manifest {hash}"))
             }
-            other => Self::Invalid(other.to_string()),
+            // Relay query/transport failures are environmental: fall back, do not block.
+            RemotePersistenceError::Event(NostrEventError::Query(message)) => {
+                Self::Unavailable(format!("nostr relay query: {message}"))
+            }
+            RemotePersistenceError::Event(error @ NostrEventError::Invalid(_)) => {
+                Self::Invalid(format!("nostr event: {error}"))
+            }
+            RemotePersistenceError::Manifest(error) => {
+                Self::Invalid(format!("manifest verification: {error}"))
+            }
+            // Blob transport failure is environmental; everything else is data we must reject.
+            RemotePersistenceError::Blob(BlobReadError::Http(message)) => {
+                Self::Unavailable(format!("blossom blob fetch: {message}"))
+            }
+            RemotePersistenceError::Blob(
+                error @ (BlobReadError::InvalidUrl(_)
+                | BlobReadError::MissingHost
+                | BlobReadError::ForbiddenHost(_)
+                | BlobReadError::NoAllowedUrls),
+            ) => Self::Invalid(format!("blossom url policy: {error}")),
+            RemotePersistenceError::Blob(
+                error @ (BlobReadError::TooLarge { .. }
+                | BlobReadError::SizeMismatch { .. }
+                | BlobReadError::HashMismatch { .. }),
+            ) => Self::Invalid(format!("blob verification: {error}")),
         }
     }
 }
@@ -686,6 +713,47 @@ mod tests {
         )
         .expect_err("missing bytes rejected");
         assert!(matches!(rejection, MapPersistenceRejection::Incomplete(_)));
+    }
+
+    #[test]
+    fn map_persistence_rejection_classifies_relay_query_failure_as_unavailable() {
+        let rejection: MapPersistenceRejection = RemotePersistenceError::Event(
+            nostr_client::events::NostrEventError::Query("connection refused".into()),
+        )
+        .into();
+        assert!(matches!(rejection, MapPersistenceRejection::Unavailable(_)));
+    }
+
+    #[test]
+    fn map_persistence_rejection_classifies_blob_http_failure_as_unavailable() {
+        let rejection: MapPersistenceRejection = RemotePersistenceError::Blob(
+            nostr_client::blobs::BlobReadError::Http("timed out".into()),
+        )
+        .into();
+        assert!(matches!(rejection, MapPersistenceRejection::Unavailable(_)));
+    }
+
+    #[test]
+    fn map_persistence_rejection_classifies_blob_policy_and_verification_as_invalid() {
+        let policy: MapPersistenceRejection = RemotePersistenceError::Blob(
+            nostr_client::blobs::BlobReadError::ForbiddenHost("evil.example".into()),
+        )
+        .into();
+        let MapPersistenceRejection::Invalid(policy_message) = policy else {
+            panic!("blob URL policy rejection must classify as Invalid");
+        };
+        assert!(policy_message.contains("blossom url policy"));
+
+        let verification: MapPersistenceRejection =
+            RemotePersistenceError::Blob(nostr_client::blobs::BlobReadError::HashMismatch {
+                expected: [0; 32],
+                actual: [1; 32],
+            })
+            .into();
+        let MapPersistenceRejection::Invalid(verification_message) = verification else {
+            panic!("blob hash mismatch must classify as Invalid");
+        };
+        assert!(verification_message.contains("blob verification"));
     }
 
     #[test]

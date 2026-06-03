@@ -3586,9 +3586,9 @@ After Phase 6 implementation, add a short implementation note or checklist resul
 
 #### Automated
 
-- [ ] `if pgrep -af 'cargo (build|check|test)|cargo-make|rustc' | grep -v pgrep; then echo busy >&2; exit 1; fi`
-- [ ] `cargo check-all`
-- [ ] `cargo test-all`
+- [x] `if pgrep -af 'cargo (build|check|test)|cargo-make|rustc' | grep -v pgrep; then echo busy >&2; exit 1; fi`
+- [x] `cargo check-all`
+- [x] `cargo test-all` — ran as `cargo test-native` (whole workspace minus `web`) per user instruction; full-workspace wasm32 compile was already verified green in the publish-unification Phase 7 pass
 
 #### Manual
 
