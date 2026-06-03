@@ -659,17 +659,7 @@ fn save_dirty_chunks_debounced(
             .remove(map_id)
             .unwrap_or_default();
 
-        let spawn_points: Vec<Vec3> = respawn_query
-            .iter()
-            .filter(|(_, mid)| *mid == map_id)
-            .map(|(pos, _)| pos.0)
-            .collect();
-        let meta = MapMeta {
-            version: 1,
-            seed: config.seed,
-            generation_version: config.generation_version,
-            spawn_points,
-        };
+        let meta = build_map_meta(config, map_id, &respawn_query);
         // Meta differs from the last persisted meta when seed/generation/spawn-points change.
         // Drives the homebase meta delta (overworld always sends meta as Present), so a
         // post-genesis spawn-point change still republishes rather than being silently dropped.
@@ -869,6 +859,32 @@ fn build_overworld_publish_slots(
     (chunks, chunk_entities)
 }
 
+/// Builds a map's `MapMeta` from its config and current respawn points, with spawn points in a
+/// deterministic order: ECS iteration order is unstable, and both the persisted-meta equality
+/// check (`meta_changed`) and published meta bytes must not flap on permutation.
+fn build_map_meta(
+    config: &VoxelMapConfig,
+    map_id: &MapInstanceId,
+    respawn_query: &Query<(&Position, &MapInstanceId), With<RespawnPoint>>,
+) -> MapMeta {
+    let mut spawn_points: Vec<Vec3> = respawn_query
+        .iter()
+        .filter(|(_, mid)| *mid == map_id)
+        .map(|(pos, _)| pos.0)
+        .collect();
+    spawn_points.sort_by(|a, b| {
+        a.x.total_cmp(&b.x)
+            .then(a.y.total_cmp(&b.y))
+            .then(a.z.total_cmp(&b.z))
+    });
+    MapMeta {
+        version: 1,
+        seed: config.seed,
+        generation_version: config.generation_version,
+        spawn_points,
+    }
+}
+
 /// Selects the publish slot for map-level entities.
 ///
 /// `Absent` when the map's entities did not change this cycle, so chunk-only edits do not
@@ -982,17 +998,7 @@ pub fn save_world_on_shutdown(
         if config.save_dir.is_none() {
             continue;
         }
-        let spawn_points: Vec<Vec3> = respawn_query
-            .iter()
-            .filter(|(_, mid)| *mid == map_id)
-            .map(|(pos, _)| pos.0)
-            .collect();
-        let meta = MapMeta {
-            version: 1,
-            seed: config.seed,
-            generation_version: config.generation_version,
-            spawn_points,
-        };
+        let meta = build_map_meta(config, map_id, &respawn_query);
         meta_ops.spawn_save(&meta_store.0, (), meta);
         meta_ops.flush();
         log_save_errors(&mut meta_ops, "map metadata");
