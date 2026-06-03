@@ -38,7 +38,6 @@ pub struct ServerNetworkPlugin {
     pub config: ServerNetworkConfig,
 }
 
-
 impl Plugin for ServerNetworkPlugin {
     fn build(&self, app: &mut App) {
         let config = self.config.clone();

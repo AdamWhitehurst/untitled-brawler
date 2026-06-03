@@ -4,15 +4,13 @@ use serde::{Deserialize, Serialize};
 use crate::palette::PalettedChunk;
 
 /// Voxel data stored per position
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Reflect)]
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Reflect, Default)]
 pub enum WorldVoxel {
     Air,
     #[default]
     Unset,
     Solid(u8),
 }
-
 
 /// How a chunk is filled (optimization for uniform chunks)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

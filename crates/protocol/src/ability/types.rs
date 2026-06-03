@@ -181,7 +181,6 @@ impl AbilityDefs {
 #[derive(Default)]
 pub struct AbilitySlots(pub [Option<AbilityId>; 5]);
 
-
 /// Which phase of an ability is currently executing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Reflect)]
 #[type_path = "protocol::ability"]
@@ -213,12 +212,10 @@ impl MapEntities for ActiveAbility {
 }
 
 /// Per-slot cooldown tracking.
-#[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Component, Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct AbilityCooldowns {
     pub last_used: [Option<Tick>; 5],
 }
-
 
 impl AbilityCooldowns {
     pub fn is_on_cooldown(&self, slot: usize, current_tick: Tick, cooldown_ticks: u16) -> bool {

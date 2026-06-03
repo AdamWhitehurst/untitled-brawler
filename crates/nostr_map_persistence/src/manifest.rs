@@ -69,10 +69,6 @@ pub struct NostrMapManifest {
     pub descriptor_root: [u8; 32],
     /// Server-signed authorization for client-published homebase manifests.
     /// `None` for server-owned overworld manifests and pre-attestation revisions.
-    ///
-    /// Skipped when `None` so overworld manifests serialize byte-identically to
-    /// manifests published before this field existed, preserving manifest-hash
-    /// (and `#d` tag) compatibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub homebase_attestation: Option<protocol::HomebasePublicationAttestation>,
 }

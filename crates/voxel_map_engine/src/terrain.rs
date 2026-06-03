@@ -430,26 +430,27 @@ impl VoxelGeneratorImpl for HeightmapGenerator {
                         heights,
                         slope_max,
                         self.padded_size,
-                    ) {
-                        continue;
-                    }
+                    )
+                {
+                    continue;
+                }
 
                 if !rule.allowed_biomes.is_empty()
                     && let (Some(moisture_map), Some(biome_rules)) =
                         (&self.moisture_map, &self.biome_rules)
-                    {
-                        let biome = select_biome_at_pos(
-                            self.seed,
-                            &self.height_map,
-                            moisture_map,
-                            biome_rules,
-                            world_pos.x as f64,
-                            world_pos.y as f64,
-                        );
-                        if !rule.allowed_biomes.iter().any(|b| b == &biome.biome_id) {
-                            continue;
-                        }
+                {
+                    let biome = select_biome_at_pos(
+                        self.seed,
+                        &self.height_map,
+                        moisture_map,
+                        biome_rules,
+                        world_pos.x as f64,
+                        world_pos.y as f64,
+                    );
+                    if !rule.allowed_biomes.iter().any(|b| b == &biome.biome_id) {
+                        continue;
                     }
+                }
 
                 spawns.push(WorldObjectSpawn {
                     object_id: rule.object_id.clone(),
