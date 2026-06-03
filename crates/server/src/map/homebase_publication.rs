@@ -811,6 +811,17 @@ fn begin_homebase_publication(
         published_map_entities: scope.includes_map_entities,
     };
 
+    info!(
+        revision = server_revision,
+        chained = previous_manifest_hash.is_some(),
+        edited_chunks = scope.edited_chunks.len(),
+        tombstoned_chunks = scope.tombstoned_chunks.len(),
+        entity_chunks = scope.chunk_entities.len(),
+        includes_meta = scope.includes_meta,
+        includes_map_entities = scope.includes_map_entities,
+        "resolved homebase publish delta; uploading blobs"
+    );
+
     let task = IoTaskPool::get().spawn(async move {
         match upload_and_build_unsigned_manifest(
             blob_store,
