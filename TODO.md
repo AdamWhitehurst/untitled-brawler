@@ -36,6 +36,12 @@
 
 ---
 
+## Debt
+
+- Remove FakeRemoteMapRestores
+- Consolidate test Generator impl's
+- WorldDirtyState.is_dirty is global. A homebase edit opens the debounce gate, and the save system then evaluates every map, including the overworld
+
 ## Considering
 
 - Out of scope (flagging, not fixing): the FsLocalUnpublishedPublishDraftStore is pinned the same way and could lose unpublished drafts across a restore — same bug class
