@@ -1,7 +1,6 @@
 pub mod fs_map_entities;
 pub mod fs_map_meta;
 
-use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -270,10 +269,6 @@ fn env_flag(name: &str) -> bool {
         })
         .unwrap_or(false)
 }
-
-/// Test/local-harness remote restore source using production-shaped validated saves.
-#[derive(Resource, Clone, Debug, Default)]
-pub struct FakeRemoteMapRestores(pub HashMap<MapInstanceId, ServerValidatedMapSave>);
 
 /// Optional real Nostr/Blossom read context used by server preflight.
 #[derive(Resource, Clone)]

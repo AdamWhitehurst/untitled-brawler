@@ -13,9 +13,8 @@ use voxel_map_engine::prelude::{MapDimensions, VoxelMapConfig};
 use crate::persistence::fs_map_meta::FsMapMetaStore;
 use crate::persistence::{
     install_active_revision_store_backends, map_save_dir, materialize_validated_map_save,
-    quarantine_rejected_map_save, store_map_dir_for_loading, FakeRemoteMapRestores, MapMeta,
-    QuarantinedMapSave, RemoteMapPersistenceConfig, RemoteMapReadContext, ServerValidatedMapSave,
-    WorldSavePath,
+    quarantine_rejected_map_save, store_map_dir_for_loading, MapMeta, QuarantinedMapSave,
+    RemoteMapPersistenceConfig, RemoteMapReadContext, ServerValidatedMapSave, WorldSavePath,
 };
 
 use super::{
@@ -66,7 +65,6 @@ pub fn poll_map_persistence_preflight(
     mut registry: ResMut<MapRegistry>,
     save_path: Res<WorldSavePath>,
     remote_config: Res<RemoteMapPersistenceConfig>,
-    fake_remote_restores: Option<Res<FakeRemoteMapRestores>>,
     remote_read_context: Option<Res<RemoteMapReadContext>>,
     server_identity: Res<nostr_client::NostrKeys>,
     terrain_registry: Option<Res<TerrainDefRegistry>>,
@@ -129,7 +127,6 @@ pub fn poll_map_persistence_preflight(
                     owner,
                     loaded_meta,
                     &remote_config,
-                    fake_remote_restores.as_deref(),
                     remote_read_context.as_deref(),
                 ) {
                     Some(decision) => finish_preflight_decision(
@@ -203,7 +200,6 @@ pub struct RemotePreflightTask {
 ///
 /// Returns `Some(decision)` when no remote read is needed; returns `None` after inserting a
 /// [`RemotePreflightTask`] whose result must be polled in [`MapPreflightStage::WaitingRemoteDecision`].
-#[allow(clippy::too_many_arguments)]
 fn begin_remote_or_filesystem_decision(
     commands: &mut Commands,
     entity: Entity,
@@ -211,7 +207,6 @@ fn begin_remote_or_filesystem_decision(
     owner: protocol::NostrPublicKey,
     loaded_meta: Option<MapMeta>,
     remote_config: &RemoteMapPersistenceConfig,
-    fake_remote_restores: Option<&FakeRemoteMapRestores>,
     remote_read_context: Option<&RemoteMapReadContext>,
 ) -> Option<MapPersistencePreflightDecision> {
     if !remote_config.enabled {
@@ -222,15 +217,10 @@ fn begin_remote_or_filesystem_decision(
         );
     }
 
-    if let Some(save) = fake_remote_restores.and_then(|remote| remote.0.get(target_map_id).cloned())
-    {
-        return Some(MapPersistencePreflightDecision::UseRemote(save));
-    }
-
     let Some(remote_read_context) = remote_read_context else {
         trace!(
             ?target_map_id,
-            "remote persistence enabled but no fake or real remote read context is configured; falling back"
+            "remote persistence enabled but no remote read context is configured; falling back"
         );
         return Some(
             loaded_meta

@@ -57,7 +57,7 @@ pub struct ManifestPayloadDescriptor {
     pub schema_version: u32,
 }
 
-/// Production-shaped Nostr map manifest content used by fake and real remote restore.
+/// Production-shaped Nostr map manifest content used by remote restore.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NostrMapManifest {
     pub map_id: MapInstanceId,
