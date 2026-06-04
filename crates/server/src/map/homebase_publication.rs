@@ -995,17 +995,9 @@ mod tests {
     }
 
     use voxel_map_engine::config::WorldObjectPositionKind;
-    use voxel_map_engine::prelude::{ChunkData, ChunkStatus, WorldVoxel};
+    use voxel_map_engine::prelude::{AirGenerator, ChunkData, ChunkStatus, WorldVoxel};
 
     const PADDED_VOLUME_16: usize = 18 * 18 * 18;
-
-    /// Test generator producing all-air terrain for every chunk.
-    struct AirGenerator;
-    impl VoxelGeneratorImpl for AirGenerator {
-        fn generate_terrain(&self, _chunk_pos: IVec3) -> Vec<WorldVoxel> {
-            vec![WorldVoxel::Air; PADDED_VOLUME_16]
-        }
-    }
 
     fn test_chunk_store(dir: &std::path::Path) -> FsChunkStore {
         FsChunkStore {
@@ -1066,7 +1058,7 @@ mod tests {
 
         let slots = resolve_homebase_publish_slots(
             &instance,
-            &AirGenerator,
+            &AirGenerator::new(16),
             &chunk_store,
             &test_chunk_entities_store(dir.path()),
             &test_meta_store(dir.path()),
@@ -1094,7 +1086,7 @@ mod tests {
 
         let slots = resolve_homebase_publish_slots(
             &instance,
-            &AirGenerator,
+            &AirGenerator::new(16),
             &test_chunk_store(dir.path()),
             &test_chunk_entities_store(dir.path()),
             &test_meta_store(dir.path()),
@@ -1201,7 +1193,7 @@ mod tests {
 
         let slots = resolve_homebase_publish_slots(
             &instance,
-            &AirGenerator,
+            &AirGenerator::new(16),
             &test_chunk_store(dir.path()),
             &entities_store,
             &test_meta_store(dir.path()),
@@ -1229,7 +1221,7 @@ mod tests {
 
         let slots = resolve_homebase_publish_slots(
             &instance,
-            &AirGenerator,
+            &AirGenerator::new(16),
             &chunk_store,
             &test_chunk_entities_store(dir.path()),
             &test_meta_store(dir.path()),

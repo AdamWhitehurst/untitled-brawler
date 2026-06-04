@@ -204,18 +204,11 @@ pub fn seed_from_id(id: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terrain::AirGenerator;
     use crate::types::{ChunkStatus, FillType};
 
     /// Padded chunk volume for the default `chunk_size=16`, used by tests.
     const PADDED_VOLUME_16: usize = 18 * 18 * 18;
-
-    /// Test generator producing all-air terrain for every chunk.
-    struct AirGenerator;
-    impl VoxelGeneratorImpl for AirGenerator {
-        fn generate_terrain(&self, _chunk_pos: IVec3) -> Vec<WorldVoxel> {
-            vec![WorldVoxel::Air; PADDED_VOLUME_16]
-        }
-    }
 
     #[test]
     fn chunk_matches_generated_true_for_unedited_chunk() {
@@ -223,7 +216,7 @@ mod tests {
         let pos = IVec3::ZERO;
         let voxels = vec![WorldVoxel::Air; PADDED_VOLUME_16];
         instance.insert_chunk_data(pos, ChunkData::from_voxels(&voxels, ChunkStatus::Full));
-        assert!(instance.chunk_matches_generated(pos, &AirGenerator));
+        assert!(instance.chunk_matches_generated(pos, &AirGenerator::new(16)));
     }
 
     #[test]
@@ -233,13 +226,13 @@ mod tests {
         let voxels = vec![WorldVoxel::Air; PADDED_VOLUME_16];
         instance.insert_chunk_data(pos, ChunkData::from_voxels(&voxels, ChunkStatus::Full));
         instance.set_voxel(IVec3::new(5, 5, 5), WorldVoxel::Solid(1));
-        assert!(!instance.chunk_matches_generated(pos, &AirGenerator));
+        assert!(!instance.chunk_matches_generated(pos, &AirGenerator::new(16)));
     }
 
     #[test]
     fn chunk_matches_generated_false_when_unloaded() {
         let instance = VoxelMapInstance::new(5, 16);
-        assert!(!instance.chunk_matches_generated(IVec3::ZERO, &AirGenerator));
+        assert!(!instance.chunk_matches_generated(IVec3::ZERO, &AirGenerator::new(16)));
     }
 
     #[test]

@@ -511,6 +511,27 @@ impl VoxelGeneratorImpl for FlatGenerator {
     }
 }
 
+/// All-air terrain generator producing an empty world.
+pub struct AirGenerator {
+    pub shape: RuntimeShape<u32, 3>,
+}
+
+impl AirGenerator {
+    /// Creates a generator emitting padded all-air chunks for `chunk_size`.
+    pub fn new(chunk_size: u32) -> Self {
+        let padded = chunk_size + 2;
+        Self {
+            shape: RuntimeShape::<u32, 3>::new([padded; 3]),
+        }
+    }
+}
+
+impl VoxelGeneratorImpl for AirGenerator {
+    fn generate_terrain(&self, _chunk_pos: IVec3) -> Vec<WorldVoxel> {
+        vec![WorldVoxel::Air; self.shape.usize()]
+    }
+}
+
 /// Build a [`VoxelGenerator`] from terrain components passed directly.
 ///
 /// Used by spawn functions that read the def before components have been

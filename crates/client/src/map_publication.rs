@@ -1,9 +1,7 @@
 //! Client-owned homebase publication.
-//!
-//! Under the Phase 5 "server encodes, client signs" model the client cannot
-//! reproduce the server's authoritative save bytes from replication, so it asks
-//! the server to prepare and authorize a publication. The server uploads the
-//! payload blobs, signs an attestation, and returns an unsigned `NostrMapManifest`.
+//! client cannot reproduce the server's authoritative save bytes from replication,
+//! so it asks the server to prepare and authorize a publication. The server uploads
+//! the payload blobs, signs an attestation, and returns an unsigned `NostrMapManifest`.
 //! The client then signs that manifest event with the player's Nostr key and
 //! publishes it to relays.
 

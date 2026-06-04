@@ -339,20 +339,12 @@ fn set_voxel_isolated_between_instances() {
         .unwrap();
 }
 
-struct AllAirGenerator;
-
-impl VoxelGeneratorImpl for AllAirGenerator {
-    fn generate_terrain(&self, _chunk_pos: IVec3) -> Vec<WorldVoxel> {
-        vec![WorldVoxel::Air; 18 * 18 * 18]
-    }
-}
-
 /// Test: raycast on one map does not see another map's voxels.
 #[test]
 fn raycast_isolated_between_instances() {
     let mut app = test_app();
     let map_a = spawn_map(&mut app, 1);
-    let map_b = spawn_map_with(&mut app, 1, VoxelGenerator(Arc::new(AllAirGenerator)));
+    let map_b = spawn_map_with(&mut app, 1, VoxelGenerator(Arc::new(AirGenerator::new(16))));
     tick(&mut app, 1);
 
     app.world_mut()
