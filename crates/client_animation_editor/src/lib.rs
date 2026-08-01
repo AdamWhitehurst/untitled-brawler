@@ -53,10 +53,13 @@ impl Plugin for AnimationEditorPlugin {
                 state::init_editor_state.run_if(
                     in_state(AppState::Ready).and(not(resource_exists::<state::EditorState>)),
                 ),
-                state::drive_player_from_playhead.run_if(resource_exists::<state::EditorState>),
+                state::drive_player_from_playhead
+                    .after(sprite_rig::animation::update_locomotion_blend_weights)
+                    .run_if(resource_exists::<state::EditorState>),
                 state::sync_ability_preview_layers.run_if(resource_exists::<state::EditorState>),
                 edit::rebuild_dirty_clip.run_if(resource_exists::<state::EditorState>),
-                panels::audition::set_audition_velocity,
+                panels::audition::set_audition_velocity
+                    .before(sprite_rig::animation::update_locomotion_blend_weights),
                 panels::save::drain_save_results,
             ),
         );
@@ -138,6 +141,7 @@ fn spawn_editor_rig(
         sprite_rig::AnimSetRef(entry.animset_handle.clone()),
         sprite_rig::Facing::Right,
         LinearVelocity::ZERO,
+        sprite_rig::animation::ImmediateLocomotionBlend,
         Transform::default(),
         Visibility::default(),
     ));

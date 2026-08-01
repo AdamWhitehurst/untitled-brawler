@@ -309,6 +309,8 @@ pub fn drive_player_from_playhead(
     mut state: ResMut<EditorState>,
     mut players: Query<(&mut AnimationPlayer, &AnimSetRef)>,
     built_graphs: Res<BuiltAnimGraphs>,
+    anim_assets: Res<Assets<SpriteAnimAsset>>,
+    loaded_handles: Res<LoadedAnimHandles>,
     time: Res<Time>,
     mut last_applied: Local<Option<ClipSlot>>,
 ) {
@@ -354,22 +356,67 @@ pub fn drive_player_from_playhead(
         anim.set_seek_time(applied_t);
     }
 
-    // Pause freezes the whole rig: non-selected locomotion nodes hold at speed 0 while
-    // paused and run naturally while playing. (The selected node is always
-    // transport-owned above; ability/hit_react nodes only play while selected.)
-    let base_speed = if state.playback == Playback::Playing {
-        1.0
-    } else {
-        0.0
-    };
-    for entry in &built.locomotion_entries {
-        if selected.contains(&entry.node_index) {
-            continue; // transport-owned this frame
-        }
-        if let Some(anim) = player.animation_mut(entry.node_index) {
-            anim.set_speed(base_speed);
-        } else {
-            trace!("locomotion node not playing yet; start_locomotion_blend seeds it");
+    let locomotion_durations = state
+        .working_set
+        .locomotion
+        .entries
+        .iter()
+        .map(|entry| {
+            let handle = loaded_handles
+                .0
+                .get(&entry.clip)
+                .expect("locomotion entry must reference a loaded clip");
+            anim_assets
+                .get(handle)
+                .expect("loaded locomotion handle must reference an animation asset")
+                .duration
+        })
+        .collect::<Vec<_>>();
+    drive_unselected_locomotion_nodes(
+        &mut player,
+        &built.locomotion_entries,
+        &locomotion_durations,
+        &selected,
+        state.playback,
+        applied_t,
+    );
+}
+
+/// Keeps every paused locomotion source on the shared playhead so changing the audition
+/// speed reveals a deterministic blend instead of poses frozen by prior playback history.
+fn drive_unselected_locomotion_nodes(
+    player: &mut AnimationPlayer,
+    entries: &[sprite_rig::animation::LocomotionNodeEntry],
+    durations: &[f32],
+    selected: &[AnimationNodeIndex],
+    playback: Playback,
+    playhead: f32,
+) {
+    assert_eq!(
+        entries.len(),
+        durations.len(),
+        "locomotion graph and animset entry counts must match"
+    );
+    for (entry, &duration) in entries.iter().zip(durations) {
+        assert!(
+            duration > 0.0,
+            "locomotion clips must have positive duration"
+        );
+        if !selected.contains(&entry.node_index) {
+            if let Some(animation) = player.animation_mut(entry.node_index) {
+                match playback {
+                    Playback::Playing => {
+                        animation.set_speed(1.0);
+                    }
+                    Playback::Paused => {
+                        animation
+                            .set_speed(0.0)
+                            .set_seek_time(playhead.rem_euclid(duration));
+                    }
+                }
+            } else {
+                trace!("locomotion node not playing yet; start_locomotion_blend seeds it");
+            }
         }
     }
 }
@@ -624,5 +671,76 @@ mod tests {
             &set
         )
         .is_ok());
+    }
+
+    /// Verifies paused sources wrap the shared playhead by their own clip durations.
+    #[test]
+    fn paused_locomotion_nodes_follow_the_shared_playhead() {
+        let entries = [0, 1, 2].map(|i| sprite_rig::animation::LocomotionNodeEntry {
+            node_index: AnimationNodeIndex::new(i),
+            speed_threshold: i as f32,
+        });
+        let selected = [entries[0].node_index];
+        let mut player = AnimationPlayer::default();
+        for entry in &entries {
+            player.play(entry.node_index).set_seek_time(0.25);
+        }
+
+        drive_unselected_locomotion_nodes(
+            &mut player,
+            &entries,
+            &[2.0, 0.4, 0.7],
+            &selected,
+            Playback::Paused,
+            1.25,
+        );
+
+        assert_eq!(
+            player
+                .animation(entries[0].node_index)
+                .expect("selected locomotion node should remain active")
+                .seek_time(),
+            0.25
+        );
+        for (entry, expected_seek_time) in entries[1..].iter().zip([0.05, 0.55]) {
+            let animation = player
+                .animation(entry.node_index)
+                .expect("locomotion node should remain active");
+            assert_eq!(animation.speed(), 0.0);
+            assert!((animation.seek_time() - expected_seek_time).abs() < 1e-6);
+        }
+    }
+
+    /// Verifies resuming playback restarts unselected sources without seeking them.
+    #[test]
+    fn playing_locomotion_nodes_resume_without_seeking() {
+        let entries = [0, 1].map(|i| sprite_rig::animation::LocomotionNodeEntry {
+            node_index: AnimationNodeIndex::new(i),
+            speed_threshold: i as f32,
+        });
+        let mut player = AnimationPlayer::default();
+        for entry in &entries {
+            player
+                .play(entry.node_index)
+                .set_speed(0.0)
+                .set_seek_time(0.25);
+        }
+
+        drive_unselected_locomotion_nodes(
+            &mut player,
+            &entries,
+            &[0.4, 0.7],
+            &[],
+            Playback::Playing,
+            1.25,
+        );
+
+        for entry in &entries {
+            let animation = player
+                .animation(entry.node_index)
+                .expect("locomotion node should remain active");
+            assert_eq!(animation.speed(), 1.0);
+            assert_eq!(animation.seek_time(), 0.25);
+        }
     }
 }

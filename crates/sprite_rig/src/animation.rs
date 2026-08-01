@@ -116,8 +116,21 @@ pub struct LocomotionBlendWeights {
     pub weights: Vec<f32>,
 }
 
+/// Makes locomotion weights follow their target without gameplay transition smoothing.
+#[derive(Component)]
+pub struct ImmediateLocomotionBlend;
+
 /// Rate at which blend weights converge toward targets (per second).
 const BLEND_LERP_SPEED: f32 = 10.0;
+
+/// Returns this frame's blend interpolation factor for the selected response mode.
+fn locomotion_blend_lerp_factor(dt: f32, immediate: bool) -> f32 {
+    if immediate {
+        1.0
+    } else {
+        (BLEND_LERP_SPEED * dt).min(1.0)
+    }
+}
 
 /// Populates `AnimBoneDefaults` by resolving each animset's rig and mapping its bone
 /// definitions to every animation clip referenced by that animset.
@@ -1055,7 +1068,8 @@ pub fn start_locomotion_blend(
     }
 }
 
-/// Updates locomotion blend weights based on horizontal velocity, with temporal smoothing.
+/// Updates locomotion blend weights from horizontal velocity, smoothing unless the rig
+/// requests immediate response for deterministic authoring or playback control.
 pub fn update_locomotion_blend_weights(
     mut characters: Query<
         (
@@ -1063,6 +1077,7 @@ pub fn update_locomotion_blend_weights(
             &AnimSetRef,
             &LinearVelocity,
             &mut LocomotionBlendWeights,
+            Has<ImmediateLocomotionBlend>,
         ),
         With<CharacterMarker>,
     >,
@@ -1070,9 +1085,9 @@ pub fn update_locomotion_blend_weights(
     time: Res<Time>,
 ) {
     let dt = time.delta_secs();
-    let lerp_factor = (BLEND_LERP_SPEED * dt).min(1.0);
 
-    for (mut player, animset_ref, velocity, mut blend_weights) in &mut characters {
+    for (mut player, animset_ref, velocity, mut blend_weights, immediate) in &mut characters {
+        let lerp_factor = locomotion_blend_lerp_factor(dt, immediate);
         let Some(built_graph) = built_graphs.0.get(&animset_ref.0.id()) else {
             continue; // graph not built yet — expected during startup
         };
@@ -1202,6 +1217,85 @@ mod tests {
         let entries = make_entries(&[]);
         let w = compute_blend_weights(5.0, &entries);
         assert!(w.is_empty());
+    }
+
+    /// Verifies the editor marker bypasses smoothing while gameplay rigs retain it.
+    #[test]
+    fn immediate_locomotion_blend_reaches_the_scrubbed_target_in_one_frame() {
+        use std::time::Duration;
+
+        let mut app = App::new();
+        let animset_handle = Handle::<SpriteAnimSetAsset>::default();
+        let entries = make_entries(&[0.0, 2.0, 6.0]);
+        let node_indices = entries
+            .iter()
+            .map(|entry| entry.node_index)
+            .collect::<Vec<_>>();
+        app.insert_resource(BuiltAnimGraphs(HashMap::from([(
+            animset_handle.id(),
+            BuiltAnimGraph {
+                graph_handle: Handle::default(),
+                node_map: HashMap::new(),
+                locomotion_entries: entries,
+                locomotion_blend_node: AnimationNodeIndex::new(3),
+                ability_nodes: HashMap::new(),
+                all_bones_mask: 0,
+            },
+        )])));
+        let mut time = Time::<()>::default();
+        time.advance_by(Duration::from_secs_f32(1.0 / 60.0));
+        app.insert_resource(time);
+
+        let mut spawn_rig = |immediate| {
+            let mut player = AnimationPlayer::default();
+            for &node_index in &node_indices {
+                player.play(node_index);
+            }
+            let mut entity = app.world_mut().spawn((
+                CharacterMarker,
+                AnimSetRef(animset_handle.clone()),
+                LinearVelocity(Vec3::X * 6.0),
+                LocomotionBlendWeights {
+                    weights: vec![1.0, 0.0, 0.0],
+                },
+                player,
+            ));
+            if immediate {
+                entity.insert(ImmediateLocomotionBlend);
+            }
+            entity.id()
+        };
+        let immediate_rig = spawn_rig(true);
+        let smoothed_rig = spawn_rig(false);
+        app.add_systems(Update, update_locomotion_blend_weights);
+        app.update();
+
+        let immediate = app
+            .world()
+            .entity(immediate_rig)
+            .get::<LocomotionBlendWeights>()
+            .expect("immediate rig must retain blend weights");
+        assert_eq!(immediate.weights, vec![0.0, 0.0, 1.0]);
+        let immediate_player = app
+            .world()
+            .entity(immediate_rig)
+            .get::<AnimationPlayer>()
+            .expect("immediate rig must retain its animation player");
+        assert_eq!(
+            immediate_player
+                .animation(node_indices[2])
+                .expect("run node must remain active")
+                .weight(),
+            1.0
+        );
+
+        let smoothed = app
+            .world()
+            .entity(smoothed_rig)
+            .get::<LocomotionBlendWeights>()
+            .expect("smoothed rig must retain blend weights");
+        assert!((smoothed.weights[0] - 5.0 / 6.0).abs() < 1e-6);
+        assert!((smoothed.weights[2] - 1.0 / 6.0).abs() < 1e-6);
     }
 
     /// Regression: a channel with exactly ONE keyframe must bake a constant curve at
