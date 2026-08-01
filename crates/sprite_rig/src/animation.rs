@@ -597,7 +597,7 @@ fn add_translation_curve(
 }
 
 /// Adds a scale curve from keyframes: two or more interpolate, exactly one holds its
-/// value, none adds no curve (Bevy's default scale (1,1,1) is correct).
+/// value, and none restores identity scale.
 fn add_scale_curve(
     clip: &mut AnimationClip,
     target_id: AnimationTargetId,
@@ -606,7 +606,7 @@ fn add_scale_curve(
 ) {
     let property = animated_field!(Transform::scale);
     match timeline.scale.as_slice() {
-        [] => {}
+        [] => add_constant_curve(clip, target_id, property, Vec3::ONE, duration),
         [key] => add_constant_curve(
             clip,
             target_id,
@@ -1298,12 +1298,11 @@ mod tests {
         assert!((smoothed.weights[2] - 1.0 / 6.0).abs() < 1e-6);
     }
 
-    /// Regression: a channel with exactly ONE keyframe must bake a constant curve at
-    /// that key's value — not the zero-key hold-at-default fallback. (The editor's
-    /// auto-key inserts a single key on first drag; it used to be invisible.)
+    /// Regression: single keys bake their values, while an empty scale channel restores
+    /// identity instead of preserving the last scale written by a previous clip revision.
     /// Doc: doc/bug/single_key_channel_bakes_as_default.md
     #[test]
-    fn single_key_channel_bakes_constant_at_key_value() {
+    fn single_key_channels_bake_values_and_empty_scale_restores_identity() {
         use crate::asset::{BoneTimeline, CurveType, RotationKeyframe, TranslationKeyframe};
 
         let mut bone_timelines = HashMap::new();
@@ -1360,9 +1359,14 @@ mod tests {
             .id();
         let target_id =
             AnimationTargetId::from_names(std::iter::once(&Name::new("root".to_string())));
+        let stale_scale = Vec3::new(2.0, 0.5, 1.0);
         let bone = app
             .world_mut()
-            .spawn((target_id, AnimatedBy(player_entity), Transform::default()))
+            .spawn((
+                target_id,
+                AnimatedBy(player_entity),
+                Transform::from_scale(stale_scale),
+            ))
             .id();
 
         app.update();
@@ -1383,6 +1387,11 @@ mod tests {
                 .abs_diff_eq(expected_translation, 1e-5),
             "single translation key must bake default + offset, got {:?}",
             transform.translation
+        );
+        assert!(
+            transform.scale.abs_diff_eq(Vec3::ONE, 1e-5),
+            "empty scale channel must restore identity, got {:?}",
+            transform.scale
         );
     }
 
