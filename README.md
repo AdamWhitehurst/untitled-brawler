@@ -79,6 +79,7 @@ Do not commit or log `nsec1...` private keys.
 ```bash
 cargo server -- --nostr-identity dev-server
 cargo client -- --nostr-identity alice
+cargo web -- --nostr-identity alice-web
 ```
 
 Server discovery uses Nostr kind `30078` with identifier `untitled-brawler`. Override relays with:

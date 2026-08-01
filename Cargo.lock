@@ -9218,6 +9218,7 @@ dependencies = [
  "ui",
  "wasm-bindgen",
  "wasm-bindgen-test",
+ "web-sys",
 ]
 
 [[package]]

@@ -77,7 +77,41 @@ set -e
 
 echo "Starting WASM client with Bevy CLI..."
 cd crates/web
-bevy run web "$@"
+
+web_args=()
+nostr_identity_profile=""
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --)
+            shift
+            ;;
+        --nostr-identity)
+            shift
+            if [ "$#" -eq 0 ]; then
+                echo "error: --nostr-identity requires a profile name" >&2
+                exit 2
+            fi
+            nostr_identity_profile="$1"
+            shift
+            ;;
+        --nostr-identity=*)
+            nostr_identity_profile="${1#--nostr-identity=}"
+            shift
+            ;;
+        *)
+            web_args+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [ -n "$nostr_identity_profile" ]; then
+    echo "Using Nostr identity profile: $nostr_identity_profile"
+    WEB_NOSTR_IDENTITY_PROFILE="$nostr_identity_profile" bevy run web "${web_args[@]}"
+else
+    bevy run web "${web_args[@]}"
+fi
 '''
 
 [tasks.ensure-certs]

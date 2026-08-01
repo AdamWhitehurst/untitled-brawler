@@ -62,6 +62,7 @@ avian3d = { workspace = true }
 wasm-bindgen = { workspace = true }
 console_error_panic_hook = { workspace = true }
 getrandom = { workspace = true }
+web-sys = { version = "0.3.83", features = ["Storage", "Window"] }
 # Explicit dependency for older getrandom 0.2 used by some transitive deps
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }
 

@@ -222,7 +222,7 @@ fn setup_main_menu(mut commands: Commands, server_list: Res<ServerList>) {
         .with_children(|parent| {
             // Title
             parent.spawn((
-                Text::new("Lightyear Client"),
+                Text::new("Untitled Brawler Client"),
                 TextFont {
                     font_size: 60.0,
                     ..default()
