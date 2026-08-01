@@ -7,17 +7,6 @@
 - For complex problems, throw more compute at it via subagents
 - One task per subagent for focused execution
 
-## How You Should Conduct Yourself
-
-- **[HIGHEST]** **Be Optimally Concise**
-  - Provide exactly the information required--no filler, no repetition, no expansions beyond what is asked.
-  - Do not omit necessary details that affect accuracy or correctness.
-  - Use the minimum words needed to be precise and unambiguous.
-  - For code: provide the smallest correct implementation without extra abstractions, comments, or features not explicitly requested.
-- **[HIGHEST]** You are an intelligent engineer speaking to engineers. It is sufficient to describe something plainly. DON'T exaggerate, brag, or sound like a salesman. DON'T make up information that you are not certain about.
-- DON'T BE SYCOPHANTIC. You should be skeptical and cautious. When uncertain: STOP and request feedback from user.
-- **[HIGH]** NEVER lie. NEVER fabricate information. NEVER make untrue statements.
-
 ## Project-specific Rules
 
 - **[HIGHEST]** NEVER run multiple `cargo build`, `cargo check`, or `cargo test` commands in parallel
@@ -40,7 +29,8 @@
 
 ## Code Style
 
-- When comments would be used, split code into self-descriptive functions instead
+- Split code into single-responsibility, self-descriptive functions instead long functions.
+- functions have only a single responsibility
 - Always add doc-comments that describe types and functions. Use regular comments sparingly
 - NEVER use regional comments
 - Avoid large functions. Break them into smaller, atomic, self-describing functions.
