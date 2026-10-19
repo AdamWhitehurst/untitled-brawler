@@ -30,7 +30,7 @@ fn main() {
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
-                title: "Lightyear WASM Client".to_string(),
+                title: "Untitled Brawler".to_string(),
                 ..default()
             }),
             ..default()

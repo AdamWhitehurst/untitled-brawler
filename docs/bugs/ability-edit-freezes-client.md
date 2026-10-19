@@ -3,7 +3,7 @@ date: 2026-04-27T18:01:44-07:00
 researcher: Adam Whitehurst
 git_commit: ca3437daf740068756f02597b148c9c54ee6ca29
 branch: master
-repository: bevy-lightyear-template
+repository: untitled-brawler
 topic: "Editing an ability asset hard-freezes the client"
 tags: [bug, ability, hot-reload, file_watcher, bevy-upstream]
 status: root-cause-identified-upstream-fix-pending-release

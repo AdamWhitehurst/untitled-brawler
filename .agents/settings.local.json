@@ -81,8 +81,8 @@
       "WebFetch(domain:winbuzzer.com)",
       "Bash(pgrep:*)",
       "mcp__discord__discord_search_messages",
-      "Bash(mv /home/aw/ws/bevy-lightyear-template/.claude/skills/vision-guard/vision-guard/* /home/aw/ws/bevy-lightyear-template/.claude/skills/vision-guard/)",
-      "Bash(rm -rf /home/aw/ws/bevy-lightyear-template/.claude/skills/vision-guard/vision-guard /home/aw/ws/bevy-lightyear-template/.claude/skills/vision-guard/scripts /home/aw/ws/bevy-lightyear-template/.claude/skills/vision-guard/assets /home/aw/ws/bevy-lightyear-template/.claude/skills/vision-guard/references)"
+      "Bash(mv /home/aw/ws/untitled-brawler/.claude/skills/vision-guard/vision-guard/* /home/aw/ws/untitled-brawler/.claude/skills/vision-guard/)",
+      "Bash(rm -rf /home/aw/ws/untitled-brawler/.claude/skills/vision-guard/vision-guard /home/aw/ws/untitled-brawler/.claude/skills/vision-guard/scripts /home/aw/ws/untitled-brawler/.claude/skills/vision-guard/assets /home/aw/ws/untitled-brawler/.claude/skills/vision-guard/references)"
     ],
     "deny": [],
     "ask": []
