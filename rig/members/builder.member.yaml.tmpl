@@ -1,0 +1,16 @@
+# Filled in by scripts/add-builder.sh. The role is deliberately not the workflow's
+# `implementer`, so an unbound step fails loudly instead of picking another slice's builder.
+id: "@@ID@@"
+role: builder
+agent_ref: "local:agents/builder"
+runtime: claude-code
+model: claude-sonnet-5-5
+profile: default
+cwd: "@@CWD@@"
+startup:
+  actions:
+    - type: send_text
+      value: "Slice: @@SLICE@@. Worktree: @@CWD@@. Branch: @@ID@@. Base: @@BASE@@."
+      phase: after_ready
+      idempotent: true
+      applies_on: [fresh_start, restore]

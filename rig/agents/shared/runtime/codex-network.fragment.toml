@@ -1,0 +1,3 @@
+# The rig CLI reaches the daemon over loopback HTTP; the workspace-write sandbox blocks it by default.
+[sandbox_workspace_write]
+network_access = true

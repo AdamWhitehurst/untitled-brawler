@@ -1,0 +1,106 @@
+# Plan one mission on the brawler-rpi rig: research, design, the human's design
+# gate, slicing, plan review, the human's slicing gate. The mission SPEC's intent and outcomes are locked
+# by the human before this starts. Each slice then runs brawler-rpi-build.
+workflow:
+  id: brawler-rpi
+  version: 4
+  objective: >
+    Turn an approved mission SPEC into a design the human approves and slice
+    SPECs that build it, whose player-visible outcomes deliver the mission,
+    reviewed for alignment and approved by the human.
+  target:
+    rig: brawler-rpi
+  entry:
+    role: researcher
+  coordination_terminal_turn_rule: hot_potato
+  exception_routing:
+    default: orchestrator
+    orchestrator_role: orchestrator
+  roles:
+    researcher:
+      skill_refs: [openrig-user]
+      preferred_targets: [research-researcher@brawler-rpi]
+    designer:
+      skill_refs: [openrig-user, codebase-design, data-oriented-design]
+      preferred_targets: [plan-designer@brawler-rpi]
+    planner:
+      skill_refs: [openrig-user, requirements-writer, data-oriented-design, prose]
+      preferred_targets: [plan-planner@brawler-rpi]
+    plan_reviewer:
+      skill_refs: [openrig-user]
+      preferred_targets: [plan-reviewer@brawler-rpi]
+    orchestrator:
+      skill_refs: [openrig-user, orchestration-team]
+      preferred_targets: [orch-lead@brawler-rpi]
+  steps:
+    - id: research
+      actor_role: researcher
+      depends_on: []
+      objective: >
+        Record what exists for the mission in its NOTES.md with citations into
+        the code.
+      allowed_exits: [handoff, waiting, failed]
+    - id: design
+      actor_role: designer
+      depends_on: [research]
+      objective: >
+        Write the mission DESIGN.md: the contracts the mission adds or
+        changes, the data flow per outcome, how the next variant is added, and
+        the decisions with their rejected alternatives. When routed back,
+        apply the human's decision from the design gate.
+      allowed_exits: [handoff, waiting, failed]
+    - id: design_signoff
+      actor_role: orchestrator
+      depends_on: [design]
+      objective: >
+        Hold the design gate. On approval close handoff to planning. On
+        rejection put the human's decision in the result note and close
+        failed.
+      allowed_exits: [handoff, waiting, failed]
+      gate:
+        target: human@kernel
+        summary: "The mission's contracts, data flow, and extension path in DESIGN.md. Approve to plan slices against it."
+        evidence_ref: /home/aw/.openrig/workspace/projects
+      next_hop:
+        on:
+          failed: design
+    - id: plan
+      actor_role: planner
+      depends_on: [design_signoff]
+      objective: >
+        Slice the mission against its approved DESIGN.md: one slice SPEC per
+        player-visible step, and the slice map in the mission SPEC. When routed back, resolve each finding
+        of the latest plan review.
+      allowed_exits: [handoff, waiting, failed]
+    - id: plan_review
+      actor_role: plan_reviewer
+      depends_on: [plan]
+      objective: >
+        Review the plan for alignment with the project, the mission outcomes,
+        and the approved DESIGN.md, findings in the mission NOTES.md. Pass with handoff; route
+        back to plan with failed while a finding must change the plan. The
+        second review is final.
+      allowed_exits: [handoff, waiting, failed]
+      next_hop:
+        on:
+          failed: plan
+    - id: plan_signoff
+      actor_role: orchestrator
+      depends_on: [plan_review]
+      objective: >
+        Hold the slicing gate. On approval stamp each slice with rig scope
+        slice approve --scope spec, close done, and start brawler-rpi-build
+        for the first slice. On rejection put the decision text in the result
+        note and close failed.
+      allowed_exits: [done, waiting, failed]
+      gate:
+        target: human@kernel
+        summary: "Slices and the outcome each makes visible, reviewed for alignment. Approve to lock the plan and start the first slice."
+        evidence_ref: /home/aw/.openrig/workspace/projects
+      next_hop:
+        on:
+          failed: plan
+  # Research, two design and gate rounds, two plan and review rounds, the
+  # slicing gate. A trip lands with orch-lead.
+  loop_guards:
+    max_hops: 10

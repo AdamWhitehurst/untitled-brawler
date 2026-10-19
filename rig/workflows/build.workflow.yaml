@@ -1,0 +1,93 @@
+# Build one slice on the brawler-rpi rig: implement, two independent code
+# reviews, the design sync, the human's playtest gate. Proof lands with rig proof add.
+workflow:
+  id: brawler-rpi-build
+  version: 6
+  objective: >
+    Turn one locked slice SPEC into a reviewed git review stack whose outcome
+    the human has seen in play.
+  target:
+    rig: brawler-rpi
+  entry:
+    role: implementer
+  coordination_terminal_turn_rule: hot_potato
+  exception_routing:
+    default: orchestrator
+    orchestrator_role: orchestrator
+  roles:
+    reviewer_codex:
+      skill_refs: [openrig-user, verification-before-completion]
+      preferred_targets: [review-codex@brawler-rpi]
+    reviewer_claude:
+      skill_refs: [openrig-user, verification-before-completion]
+      preferred_targets: [review-claude@brawler-rpi]
+    # No preferred_targets: each slice has its own builder. start-slice.sh passes it as
+    # --entry-owner, and a step that routes back to implement passes --next-owner.
+    implementer:
+      skill_refs: [openrig-user, development-team, test-driven-development, commit, data-oriented-design]
+    designer:
+      skill_refs: [openrig-user, codebase-design, commit]
+      preferred_targets: [plan-designer@brawler-rpi]
+    orchestrator:
+      skill_refs: [openrig-user, orchestration-team]
+      preferred_targets: [orch-lead@brawler-rpi]
+  steps:
+    - id: implement
+      actor_role: implementer
+      depends_on: []
+      objective: >
+        Build the slice the root objective names in a worktree, one commit
+        per mini-requirement, and record the proof contract's evidence. When
+        routed back, fix each finding as a fixup on its owning commit.
+      allowed_exits: [handoff, waiting, failed]
+    - id: code_review_codex
+      actor_role: reviewer_codex
+      depends_on: [implement]
+      objective: >
+        Review the stack against the slice SPEC and the mission DESIGN.md,
+        drop the findings with rig proof add, and judge each automated proof
+        contract item you ran with rig proof judge. Pass with handoff; route back to implement with failed
+        while a blocking finding stands. The second review is final.
+      allowed_exits: [handoff, waiting, failed]
+      next_hop:
+        on:
+          failed: implement
+    - id: code_review_claude
+      actor_role: reviewer_claude
+      depends_on: [implement]
+      objective: >
+        Review the stack against the slice SPEC and the mission DESIGN.md,
+        verify each proof contract item, and drop the findings with rig proof add. Pass with handoff;
+        route back to implement with failed while a blocking finding stands.
+        The second review is final.
+      allowed_exits: [handoff, waiting, failed]
+      next_hop:
+        on:
+          failed: implement
+    - id: design_sync
+      actor_role: designer
+      depends_on: [code_review_codex, code_review_claude]
+      objective: >
+        Update the kb pages the slice changed as one commit on top of the
+        stack, record each departure from DESIGN.md in the slice PROGRESS.md, and
+        list every departure from DESIGN.md in the result note, so each one
+        reaches the human's gate row.
+      allowed_exits: [handoff, waiting]
+    - id: ship_signoff
+      actor_role: orchestrator
+      depends_on: [design_sync]
+      objective: >
+        Hold the playtest gate. On approval judge each play proof item for the
+        human with rig proof judge, stamp the slice with rig scope slice
+        approve, close done, start the slices it unblocks, and have the builder
+        submit with git review. On rejection drop the decision text as an
+        adjudication proof and close failed.
+      allowed_exits: [done, waiting, failed]
+      gate:
+        target: human@kernel
+        summary: "Slice stack passes both code reviewers with proof recorded. Each design deviation is listed in the design sync note above: accept or reject each, play the slice against its outcome, and approve to lock delivery; the builder then submits with git review."
+        evidence_ref: /home/aw/.openrig/workspace/projects
+  # Two implement and review rounds, the design sync, the gate. A trip lands
+  # with orch-lead.
+  loop_guards:
+    max_hops: 8

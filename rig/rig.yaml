@@ -1,0 +1,150 @@
+version: "0.2"
+name: brawler-rpi
+summary: >
+  Plans and builds missions for untitled-brawler. The human and the kernel
+  advisor lock a mission's player-visible outcomes; the plan workflow
+  researches, designs the contracts for the human's design gate, then slices
+  and reviews the plan for the human's slicing gate. Each slice gets its own
+  builder seat in its own worktree under ~/wt, built under two independent code
+  reviewers and a design sync for the human's playtest gate. The builder keeps
+  the slice's pull requests answered until they merge.
+
+culture_file: CULTURE.md
+# Claude seats launch in auto mode; Codex seats use the openrig-seat profile (sandboxed, never asks).
+permission_policy: builtin:auto
+
+# OpenRig's managed blocks go to the ignored local file.
+managed_blocks:
+  claude-code: CLAUDE.local.md
+
+startup:
+  files:
+    - path: startup/engineering.md
+      delivery_hint: guidance_merge
+      required: true
+    - path: startup/project.md
+      delivery_hint: guidance_merge
+      required: true
+  actions: []
+
+# Claude seats work from the repo root, one level above this spec. Codex seats
+# work from this directory, so their managed AGENTS.md block lands here and not
+# in the repo's tracked AGENTS.md; Codex still reads the repo's. Builders are
+# added per slice by scripts/add-builder.sh from members/builder.member.yaml.tmpl.
+# Claude effort is set per model in agents/shared/runtime/claude-seat-settings.fragment.json.
+pods:
+  - id: research
+    label: Research
+    members:
+      - id: researcher
+        agent_ref: "local:agents/researcher"
+        runtime: claude-code
+        model: claude-sonnet-5-5
+        profile: default
+        cwd: ".."
+    edges: []
+
+  - id: plan
+    label: Planning
+    members:
+      - id: designer
+        agent_ref: "local:agents/designer"
+        runtime: claude-code
+        model: claude-opus-5-5
+        profile: default
+        cwd: ".."
+      - id: planner
+        agent_ref: "local:agents/planner"
+        runtime: claude-code
+        model: claude-opus-5-5
+        profile: default
+        cwd: ".."
+      - id: reviewer
+        agent_ref: "local:agents/plan-reviewer"
+        runtime: claude-code
+        model: claude-opus-5-5
+        profile: default
+        cwd: ".."
+    edges:
+      - kind: can_observe
+        from: planner
+        to: designer
+      - kind: can_observe
+        from: reviewer
+        to: planner
+
+  - id: review
+    label: Code review
+    members:
+      - id: codex
+        agent_ref: "local:agents/reviewer"
+        runtime: codex
+        codex_config_profile: openrig-seat
+        profile: default
+        cwd: "."
+      - id: claude
+        agent_ref: "local:agents/reviewer"
+        runtime: claude-code
+        model: claude-opus-5-5
+        profile: default
+        cwd: ".."
+    edges: []
+
+  # Holds the PR watcher and the per-slice builders.
+  - id: build
+    label: Build
+    members:
+      - id: prs
+        agent_ref: "builtin:terminal"
+        runtime: terminal
+        profile: none
+        cwd: "."
+        startup:
+          actions:
+            - type: send_text
+              value: "python3 -I watcher/pr_watch.py --loop"
+              phase: after_ready
+              idempotent: true
+              applies_on: [fresh_start, restore]
+    edges: []
+
+  - id: orch
+    label: Orchestration
+    members:
+      - id: lead
+        agent_ref: "local:agents/orchestrator"
+        runtime: claude-code
+        model: claude-opus-5-5
+        profile: default
+        cwd: ".."
+      - id: peer
+        agent_ref: "local:agents/orchestrator"
+        runtime: codex
+        codex_config_profile: openrig-seat
+        profile: default
+        cwd: "."
+    edges:
+      - kind: collaborates_with
+        from: lead
+        to: peer
+
+# Routing is the workflow's job. These edges are topology hints.
+edges:
+  - kind: delegates_to
+    from: orch.lead
+    to: research.researcher
+  - kind: delegates_to
+    from: orch.lead
+    to: plan.designer
+  - kind: delegates_to
+    from: orch.lead
+    to: plan.planner
+  - kind: delegates_to
+    from: orch.lead
+    to: plan.reviewer
+  - kind: delegates_to
+    from: orch.lead
+    to: review.codex
+  - kind: delegates_to
+    from: orch.lead
+    to: review.claude

@@ -1,0 +1,31 @@
+name: rpi-plan-reviewer
+version: "1.0"
+description: Plan reviewer. Reviews the mission plan for alignment with the project and the mission outcomes.
+
+defaults:
+  runtime: claude-code
+
+imports:
+  - ref: "path:/home/aw/.local/share/mise/installs/node/24/lib/node_modules/@openrig/cli/daemon/specs/agents/shared"
+  - ref: local:../shared
+
+profiles:
+  default:
+    uses:
+      skills: [rpi-shared:commit, rpi-shared:data-oriented-design, rpi-shared:development-team, rpi-shared:orchestration-team, rpi-shared:prose, rpi-shared:test-driven-development]
+      guidance: []
+      subagents: []
+      plugins: [shared:openrig-core]
+      runtime_resources: [shared:claude-default-settings, shared:claude-default-mcp, shared:codex-default-config, shared:claude-activity-hooks, rpi-shared:claude-seat-settings, rpi-shared:codex-network]
+
+resources:
+  guidance:
+    - id: role
+      path: guidance/role.md
+
+startup:
+  files:
+    - path: guidance/role.md
+      delivery_hint: send_text
+      required: true
+  actions: []

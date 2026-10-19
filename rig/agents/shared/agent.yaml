@@ -1,0 +1,29 @@
+name: rpi-shared
+version: "1.0"
+description: Skills, deny rules, effort, and network settings shared by every brawler-rpi seat
+
+resources:
+  skills:
+    - id: commit
+      path: skills/commit
+    - id: data-oriented-design
+      path: skills/data-oriented-design
+    - id: development-team
+      path: skills/development-team
+    - id: orchestration-team
+      path: skills/orchestration-team
+    - id: prose
+      path: skills/prose
+    - id: test-driven-development
+      path: skills/test-driven-development
+  runtime_resources:
+    - id: claude-seat-settings
+      path: runtime/claude-seat-settings.fragment.json
+      runtime: claude-code
+      type: claude_settings_fragment
+    - id: codex-network
+      path: runtime/codex-network.fragment.toml
+      runtime: codex
+      type: codex_config_fragment
+
+profiles: {}
