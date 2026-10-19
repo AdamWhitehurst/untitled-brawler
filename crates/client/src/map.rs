@@ -51,7 +51,7 @@ use voxel_map_engine::prelude::{
     VoxelMapInstance, VoxelPlugin, VoxelWorld, WorldVoxel,
 };
 
-const RAYCAST_MAX_DISTANCE: f32 = 100.0;
+const RAYCAST_MAX_DISTANCE: f32 = 200.0;
 
 fn in_editing_mode(mode: EditingMode) -> impl Fn(Res<EditingMode>) -> bool + Clone {
     move |current_mode: Res<EditingMode>| *current_mode == mode
