@@ -60,7 +60,7 @@ workflow:
       gate:
         target: human@kernel
         summary: "The mission's contracts, data flow, and extension path in DESIGN.md. Approve to plan slices against it."
-        evidence_ref: /home/aw/.openrig/workspace/projects
+        evidence_ref: missions
       next_hop:
         on:
           failed: design
@@ -96,7 +96,7 @@ workflow:
       gate:
         target: human@kernel
         summary: "Slices and the outcome each makes visible, reviewed for alignment. Approve to lock the plan and start the first slice."
-        evidence_ref: /home/aw/.openrig/workspace/projects
+        evidence_ref: missions
       next_hop:
         on:
           failed: plan

@@ -10,7 +10,8 @@ project="$1"; mission="$2"; slice="$3"; shift 3
 "$RIG_ROOT/scripts/add-builder.sh" "$project" "$mission" "$slice" "$@"
 
 name="$mission-$slice"; builder="build-$name@$RIG_NAME"; wt_dir="$WT_ROOT/$name"
-spec="$WS_ROOT/projects/$project/missions/$mission/slices/$slice/SPEC.md"
+PROJECT_ROOT="$(project_root "$project")"
+spec="$PROJECT_ROOT/missions/$mission/slices/$slice/SPEC.md"
 spec_id="$(python3 -I - "$spec" <<'PY'
 import re, sys
 path = sys.argv[1]; text = open(path).read()

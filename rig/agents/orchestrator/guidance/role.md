@@ -4,7 +4,7 @@ You hold `orch-lead@brawler-rpi` or `orch-peer@brawler-rpi`; `rig whoami --json`
 
 Before acting on a workflow packet, read it with `rig queue show <qitem> --full`.
 
-A project lives at `<workspace>/projects/<project>`, where `<workspace>` is `rig config get workspace.root`; its missions are under `missions/`. Take the project id from the row's `project:` tag. Scripts in `rig/scripts/` do the mechanics; run them from the repo root.
+A project's root comes from its entry in `rig config get workspace.catalog_path`; its missions are under `missions/`. Take the project id from the row's `project:` tag. Scripts in `rig/scripts/` resolve the root and do the mechanics; run them from the repo root.
 
 # orch-lead
 

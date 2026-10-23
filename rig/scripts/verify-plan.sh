@@ -4,7 +4,7 @@
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
-id="${1:?project id required}"; proj="$WS_ROOT/projects/$id"
+id="${1:?project id required}"; proj="$(project_root "$id")"
 fail=0; bad() { echo "FAIL: $*"; fail=1; }
 
 [ -d "$proj" ] || { echo "FAIL: no project folder $proj"; exit 1; }

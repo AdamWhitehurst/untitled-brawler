@@ -20,7 +20,8 @@ for v in "$project" "$mission" "$slice"; do
   [[ "$v" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "ids must be lowercase kebab-case: $v" >&2; exit 2; }
 done
 
-slice_dir="$WS_ROOT/projects/$project/missions/$mission/slices/$slice"
+PROJECT_ROOT="$(project_root "$project")"
+slice_dir="$PROJECT_ROOT/missions/$mission/slices/$slice"
 [ -f "$slice_dir/SPEC.md" ] || { echo "no slice SPEC at $slice_dir/SPEC.md" >&2; exit 1; }
 name="$mission-$slice"; wt_dir="$WT_ROOT/$name"; session="build-$name@$RIG_NAME"
 if [ -z "$base" ]; then

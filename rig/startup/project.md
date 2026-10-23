@@ -12,11 +12,10 @@ rig workflow project --instance <id> --current-packet <qitem> --exit handoff|don
 
 `failed` is the artifact's verdict. A step you cannot perform is `waiting` with `--blocked-on`.
 
-Artifacts:
+Artifacts, all paths from the catalog-selected project root:
 
-- project: `<workspace>/projects/<project>/`, where `<workspace>` is `rig config get workspace.root`
-- mission: `<project>/missions/<mission>/` with `SPEC.md`, `NOTES.md`, `PROGRESS.md`
-- slice: `<mission>/slices/<slice>/` with `SPEC.md`, `PROGRESS.md`, `PROOF.md`, `proof/`
+- mission: `missions/<mission>/` with `SPEC.md`, `NOTES.md`, `PROGRESS.md`
+- slice: `missions/<mission>/slices/<slice>/` with `SPEC.md`, `PROGRESS.md`, `PROOF.md`, `proof/`
 - code: `~/wt/untitled-brawler/<mission>-<slice>`, branch `<mission>-<slice>`, worked by `build-<mission>-<slice>@brawler-rpi`
 
 Scope commands take `--workspace <project path>`. Claude seats invoke skills as `/<name>`; Codex seats read the file.

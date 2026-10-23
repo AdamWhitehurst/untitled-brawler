@@ -86,7 +86,7 @@ workflow:
       gate:
         target: human@kernel
         summary: "Slice stack passes both code reviewers with proof recorded. Each design deviation is listed in the design sync note above: accept or reject each, play the slice against its outcome, and approve to lock delivery; the builder then submits with git review."
-        evidence_ref: /home/aw/.openrig/workspace/projects
+        evidence_ref: missions
   # Two implement and review rounds, the design sync, the gate. A trip lands
   # with orch-lead.
   loop_guards:
