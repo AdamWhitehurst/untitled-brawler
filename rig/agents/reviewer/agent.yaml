@@ -12,7 +12,7 @@ imports:
 profiles:
   default:
     uses:
-      skills: [verification-before-completion, rpi-shared:commit, rpi-shared:data-oriented-design, rpi-shared:development-team, rpi-shared:orchestration-team, rpi-shared:prose, rpi-shared:test-driven-development]
+      skills: [verification-before-completion]
       guidance: []
       subagents: []
       plugins: [shared:openrig-core]
