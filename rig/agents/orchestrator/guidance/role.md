@@ -10,7 +10,7 @@ A project lives at `<workspace>/projects/<project>`, where `<workspace>` is `rig
 
 ## Starting a mission
 
-A new project starts with `rig/scripts/new-project.sh <project> "<intent>"`. The human sends a mission whose `SPEC.md` they have approved. Start the plan workflow with the mission path absolute:
+The human sends a mission whose `SPEC.md` they have approved. Start the plan workflow with the mission path absolute:
 
 ```
 rig workflow instantiate "$PWD/rig/workflows/plan.workflow.yaml" --root-objective "Mission: <mission path>." --created-by orch-lead@brawler-rpi --project <project> --mission <mission>

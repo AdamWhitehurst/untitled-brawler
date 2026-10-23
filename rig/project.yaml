@@ -1,0 +1,14 @@
+schema: openrig.project/v0alpha1
+kind: project
+metadata:
+  id: untitled-brawler
+proofPolicy:
+  judges:
+    - review-codex@brawler-rpi
+    - orch-lead@brawler-rpi
+install:
+  intent: SPEC.md
+  context: []
+  skills: []
+missions:
+  root: missions
