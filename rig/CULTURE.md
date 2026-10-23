@@ -51,6 +51,8 @@ OpenRig's project view reads `mission.yaml`, each `slice.yaml`, slice `SPEC.md` 
 - Code that has to depart from `DESIGN.md` records the deviation and its reason in the slice `PROGRESS.md`. Reviewers block an unrecorded or unjustified deviation; the human accepts or rejects the rest at the playtest gate.
 - A question only the human can answer rides in the result note to the next gate. A step that cannot proceed closes `waiting` with the blocker stated. When the blocker is facts the mission research does not cover, send the questions to `research-researcher@brawler-rpi` as a queue row; its findings land in the mission `NOTES.md`.
 - Exceptions route to `orch-lead`, which reaches the human.
+- Something you noticed that is not yours to fix and has no row yet: `rig stream emit --source <you> --hint-type bug|idea|risk --hint-urgency routine|urgent|critical --hint-tags project:<id>,mission:<mission>,slice:<slice> --body "<what, where as path:line, why it matters>"`, plus `--hint-destination <seat>` when you know the owner. The kernel's queue-worker turns it into a row carrying those tags; `critical` shows as attention in the TUI.
+- Papercuts go on the stream the same way, with `--hint-type papercut`: a tool call that failed, an instruction that was wrong or missing and had to be worked out, a step done by hand that a script could do. Say what happened and what would have avoided it.
 - Enter a worktree with a standalone `cd <dir>`, then run git and cargo there, so commands match the allowlist without a prompt and cargo reads the worktree's `.cargo/config.toml`. Write paths literally.
 
 ## Asking the human
