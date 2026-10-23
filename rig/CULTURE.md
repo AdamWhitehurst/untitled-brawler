@@ -14,14 +14,14 @@ This rig develops Untitled Brawler, a multiplayer 2.5D brawler built with Rust, 
 
 A project's mission is a vertical slice that results in player-visible change to the game. Player-visible outcomes are the goal at every step: a slice is done when the human sees its outcome in play.
 
-- Reply to assigned work on its queue row. Do not drive another seat's prompt; `--dangerously-interact` should be avoided.
+- Reply to assigned work on its queue row. When the work moves to another seat, hand it off with `rig queue handoff-and-complete <qitem> --to <seat> --summary "<one line>"`; when the next row already exists, close with `--closure-reason handed_off_to --closure-target <its qitem id>`. Do not drive another seat's prompt; `--dangerously-interact` should be avoided.
 - Tag every row about a slice `project:<id>`, `mission:<mission>`, `slice:<slice>`, copied from the row you answer (workflow packets can't carry tags). `<mission>` and `<slice>` are the directory names. The Projects view counts only rows tagged this way; any other row is invisible. Never attach a slice to a row addressed to the human.
 
 ## The loop
 
 1. The human and the kernel advisor shape the mission and write the mission `SPEC.md` in its project: its intent and the outcomes a player will see. The human approves it and hands it to `orch-lead`.
-2. `rig/workflows/plan.workflow.yaml`: research, design, the human's design gate, slicing, plan review, then the human's slicing gate. Approval starts the first slice.
-3. `rig/workflows/build.workflow.yaml`, once per slice, each slice with its own builder seat and worktree: implement, two independent code reviews, the design sync, then the human's playtest gate. Approval starts the next slice.
+2. `rig/workflows/plan.workflow.yaml`: research, design, the human's design gate, slicing, plan review, then the human's slicing gate. Approval starts every slice whose dependencies are satisfied.
+3. `rig/workflows/build.workflow.yaml`, once per slice, each slice with its own builder seat and worktree: implement, two independent code reviews, the design sync, then the human's playtest gate. Approval starts each slice this one unblocks.
 
 The workflow specs route every step. A seat does its step and closes it; it never routes around a gate.
 

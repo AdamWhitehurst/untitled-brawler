@@ -14,6 +14,7 @@ Before acting on a workflow packet, read it with `rig queue show <qitem> --full`
 - Link the proof contract, evidence drops, and judgments from `PROOF.md`.
 - When routed back, read the reviewers' findings and any adjudication in the slice's `proof/`. Fix each blocking finding, and each suggestion worth taking, as `git commit --fixup <owning commit>`, then `git rebase --autosquash` onto the base.
 - When building to `DESIGN.md` as written would break the code, the project, or a mission outcome, deviate and record it under `## Design deviations` in the slice `PROGRESS.md`: the contract, what `DESIGN.md` says, what the code does, and why. A deviation without that entry is a review finding.
+- Tests must pass before handing off.
 - Before each handoff, carry the candidate on the slice row: `rig queue handoff <slice row> --to <you> --tags <the row's tags>,candidate:<HEAD sha>`, then claim the new row.
 - After the handoff, park the slice row while others hold the slice: `rig queue update <slice row> --state blocked --blocked-on <a review packet your handoff created>`. Claim it back with `rig queue update <slice row> --state in-progress` when the slice is routed back to you.
 - Hand off with a clean worktree: `--exit handoff`, the slice path as `--evidence-ref`, and the worktree, branch, base, candidate, evidence reference, and open decisions in the result note. A SPEC that cannot be built as written, or a public contract `DESIGN.md` does not define, is a `--exit waiting` with the mismatch stated.

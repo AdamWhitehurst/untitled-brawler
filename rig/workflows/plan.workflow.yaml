@@ -90,12 +90,12 @@ workflow:
       objective: >
         Hold the slicing gate. On approval stamp each slice with rig scope
         slice approve --scope spec, close done, and start brawler-rpi-build
-        for the first slice. On rejection put the decision text in the result
+        for every slice whose dependencies are satisfied. On rejection put the decision text in the result
         note and close failed.
       allowed_exits: [done, waiting, failed]
       gate:
         target: human@kernel
-        summary: "Slices and the outcome each makes visible, reviewed for alignment. Approve to lock the plan and start the first slice."
+        summary: "Slices and the outcome each makes visible, reviewed for alignment. Approve to lock the plan and start every dependency-ready slice."
         evidence_ref: missions
       next_hop:
         on:
