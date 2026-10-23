@@ -25,6 +25,21 @@ When writing prose, follow these rules:
   - Are weary of inventing new types. We validate that there isn't already a type that could support our use case.
   - We consider systems' architecture and how our changes adhere to it. We don't add code that degrades our architecture for the sake of easiness, we take the approach that maintains the architecture and adheres to its explicit and implicit boundaries
 
+## Design Principles
+
+- The simulation and server report facts, and the client decides how they look. Game logic never names art or sound, and never classifies an action for presentation.
+- An event or message carries the identity of what caused it, such as the ability or entity, so each reader derives what it needs. It does not carry a label the producer derived for one reader.
+- Behavior and presentation are keyed by stable ids or asset data, never by matching a display name.
+- Design for the category, not the first instance. A contract that serves one ability serves every ability, and adding the next one is an asset entry, not a code change.
+- What varies per ability, character, world object, or effect lives in assets, not in code branches.
+- A public contract, meaning an event, message, protocol type, or asset schema, comes from the mission `DESIGN.md`. A contract it does not define is a design question for the human.
+
+## Module Organization
+
+Every file is small and owns one concern. `lib.rs` and `main.rs` are facades only: crate docs, `mod` declarations, and `pub use` re-exports. They contain no type, trait, function, constant, or static definitions. Split from the first commit, not once a file grows.
+
+Consumers import from the crate root. Internal module paths stay private. Inherent `impl` blocks may be split across modules, so a constructor lives in a focused module rather than beside an aggregate type.
+
 ## Testing
 
 ### Rust test modules

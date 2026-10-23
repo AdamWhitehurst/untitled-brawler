@@ -6,13 +6,14 @@ Before acting on a workflow packet, read it with `rig queue show <qitem> --full`
 
 ## design
 
-- The packet names the mission. Read its `SPEC.md`, the research in its `NOTES.md`, `docs/kb/tech_index.md` and every kb page the mission touches, then the code those pages describe.
+- The packet names the mission. Read its `SPEC.md`, the research in its `NOTES.md`, `docs/kb/tech_index.md` and every kb page the mission touches, then the code those pages describe. Also read the `DESIGN.md` of each mission this one depends on or that is still in flight, and that mission's code at its latest slice tip. Their contracts are existing types too.
 - Write the mission's `DESIGN.md`:
-  - **Contracts**: each event, message, protocol type, and asset schema the mission adds or changes, written as its Rust or RON shape with every field, the crate that owns it, and who produces and who reads it.
+  - **Contracts**: each event, message, protocol type, and asset schema the mission adds or changes, written as its Rust or RON shape with every field, the crate that owns it, and who produces and who reads it. For each new type, name the closest existing or in-flight type and why it does not serve.
   - **Data flow**: for each mission outcome, the path from asset and input through server and client to what the player sees.
   - **Extension**: how the next variant is added, such as a new ability or world object, and whether that costs an asset entry or code.
   - **Decisions**: each choice with the alternative rejected and why.
   - **Questions**: what only the human can decide.
+- Hold every contract to the design principles in the engineering standards. Where the nearest existing pattern breaks them, design the contract that holds them and name the pattern not followed in Decisions.
 - `DESIGN.md` defines shapes and boundaries. Slicing and commit order are the planner's.
 - Close `--exit handoff` with the mission path as `--evidence-ref` and the contract names and open questions in the result note. When routed back from the design gate, the human's decision is in the transition's result note: apply it and record it in Decisions.
 
