@@ -1,0 +1,500 @@
+<title>Voxel Engine Review</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column; each candidate is a card with a before/after pair of panels side by side, stacking on phones. */
+:root {
+  --bg: #f6f5f2;
+  --surface: #ffffff;
+  --panel: #f0efeb;
+  --fg: #1c2430;
+  --muted: #5b6675;
+  --line: #d8d6cf;
+  --accent: #3f4fb8;
+  --accent-ink: #e4e7fb;
+  --deep: #141b2a;
+  --deep-2: #1f2a40;
+  --deep-fg: #f3f5fa;
+  --deep-muted: #aeb8d8;
+  --warn: #b7791f;
+  --warn-bg: #fbf1dc;
+  --leak: #c2410c;
+  --leak-bg: #fde8e0;
+  --good: #1f7a4d;
+  --good-bg: #e2f3ea;
+  --hidden-bg: #e9e8e3;
+  --display: "Newsreader", Georgia, "Times New Roman", serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161d; --surface: #1a2029; --panel: #141921; --fg: #e6e9ef; --muted: #9aa5b5; --line: #2c3442;
+    --accent: #8d9bf0; --accent-ink: #232b4a; --deep: #0b0f18; --deep-2: #161d2c; --deep-fg: #f3f5fa; --deep-muted: #9fa9c9;
+    --warn: #e0a84a; --warn-bg: #30261a; --leak: #f08a5b; --leak-bg: #3a2219; --good: #5fc48f; --good-bg: #16301f; --hidden-bg: #222935;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161d; --surface: #1a2029; --panel: #141921; --fg: #e6e9ef; --muted: #9aa5b5; --line: #2c3442;
+  --accent: #8d9bf0; --accent-ink: #232b4a; --deep: #0b0f18; --deep-2: #161d2c; --deep-fg: #f3f5fa; --deep-muted: #9fa9c9;
+  --warn: #e0a84a; --warn-bg: #30261a; --leak: #f08a5b; --leak-bg: #3a2219; --good: #5fc48f; --good-bg: #16301f; --hidden-bg: #222935;
+  color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 15px; line-height: 1.55; margin: 0; }
+main { max-width: 64rem; margin: 0 auto; padding-block: 3rem 4rem; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 3rem; }
+h1, h2 { font-family: var(--display); font-weight: 500; text-wrap: balance; margin: 0; line-height: 1.15; }
+h1 { font-size: 2.25rem; }
+h2 { font-size: 1.55rem; }
+h2 a { color: inherit; text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
+p { margin: 0; }
+code { font-family: var(--mono); font-size: 0.9em; background: var(--hidden-bg); padding: 0.05em 0.3em; border-radius: 3px; }
+.deep code { background: rgba(255,255,255,0.08); }
+.lbl { font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.muted { color: var(--muted); }
+.small { font-size: 0.82rem; }
+.mono { font-family: var(--mono); font-size: 0.8rem; color: var(--muted); overflow-wrap: anywhere; }
+header { display: grid; gap: 0.9rem; }
+.legend { display: flex; flex-wrap: wrap; gap: 1rem 1.25rem; font-size: 0.78rem; color: var(--muted); align-items: center; }
+.legend span { display: inline-flex; align-items: center; gap: 0.45rem; }
+.sw { display: inline-block; width: 20px; height: 12px; border: 1px solid var(--muted); background: var(--surface); }
+.sw.deep { background: linear-gradient(135deg, var(--deep), var(--deep-2)); border-color: var(--deep); }
+.sw.hid { background: var(--hidden-bg); border-color: var(--line); opacity: 0.6; }
+.intro { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 1rem 1.15rem; display: grid; gap: 0.6rem; font-size: 0.95rem; }
+.candidates { display: grid; gap: 2.5rem; }
+article { border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 1.5rem; display: grid; gap: 1.2rem; }
+.titlerow { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 0.75rem; }
+.badge { font-size: 0.72rem; font-weight: 600; padding: 0.2rem 0.5rem; border-radius: 4px; letter-spacing: 0.02em; }
+.badge.strong { background: var(--good-bg); color: var(--good); }
+.badge.explore { background: var(--warn-bg); color: var(--warn); }
+.badge.spec { background: var(--hidden-bg); color: var(--muted); }
+.badge.tag { background: var(--hidden-bg); color: var(--muted); font-weight: 500; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.panel { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 0.9rem 1rem; min-width: 0; display: grid; gap: 0.6rem; align-content: start; }
+.panel .lbl { margin-bottom: 0.1rem; }
+.panel pre.mermaid { margin: 0; overflow-x: auto; background: transparent; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.chip { font-size: 0.74rem; border: 1px solid var(--muted); background: var(--surface); padding: 0.12rem 0.5rem; border-radius: 4px; font-family: var(--mono); }
+.chip.late { border-color: var(--warn); background: var(--warn-bg); }
+.chip.leak { border-color: var(--leak); background: var(--leak-bg); }
+.chip.hid { border-color: var(--deep-muted); background: transparent; color: var(--deep-muted); opacity: 0.7; }
+.leak-ink { color: var(--leak); }
+.deep { background: linear-gradient(135deg, var(--deep), var(--deep-2)); color: var(--deep-fg); border-radius: 10px; padding: 1rem 1.1rem; display: grid; gap: 0.5rem; }
+.deep .lbl { color: var(--deep-muted); }
+.deep .code { font-family: var(--mono); font-size: 0.78rem; display: grid; gap: 0.15rem; overflow-x: auto; }
+.deep .dim { color: var(--deep-muted); }
+.deep .rule { border-top: 1px dashed var(--deep-muted); margin-block: 0.4rem; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; font-size: 0.92rem; margin: 0; }
+.grid3 > div { min-width: 0; display: grid; gap: 0.3rem; align-content: start; }
+.grid3 dd { margin: 0; }
+.grid3 ul { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.15rem; }
+.note { font-size: 0.82rem; color: var(--muted); }
+.copies { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; font-size: 0.78rem; }
+.copy { border: 1px solid var(--muted); background: var(--surface); border-radius: 6px; padding: 0.5rem 0.6rem; min-width: 0; }
+.copy.leak { border-color: var(--leak); background: var(--leak-bg); }
+.copy .lbl { display: block; margin-bottom: 0.15rem; }
+.copy .lbl.leak-ink { color: var(--leak); }
+.sites { display: grid; gap: 0.25rem; font-family: var(--mono); font-size: 0.76rem; }
+.sites div { border-left: 4px solid var(--leak); background: var(--surface); padding: 0.3rem 0.5rem; min-width: 0; overflow-wrap: anywhere; }
+.plain { display: grid; gap: 0.6rem; }
+.plain ul { margin: 0; padding-left: 1.2rem; columns: 2; column-gap: 1.5rem; font-size: 0.92rem; }
+.plain ul li { break-inside: avoid; margin-bottom: 0.2rem; }
+.fine { border-color: var(--good); background: color-mix(in srgb, var(--good-bg) 45%, var(--surface)); }
+.top { background: linear-gradient(135deg, var(--deep), var(--deep-2)); color: var(--deep-fg); border-radius: 12px; padding: 2rem; display: grid; gap: 0.75rem; }
+.top .lbl { color: var(--deep-muted); }
+.top p { color: var(--deep-fg); font-size: 0.95rem; }
+.top .dim { color: var(--deep-muted); }
+.top h2 a { text-decoration-color: var(--deep-muted); }
+.top code { background: rgba(255,255,255,0.08); }
+@media (max-width: 720px) {
+  .pair, .grid3, .copies { grid-template-columns: 1fr; }
+  .plain ul { columns: 1; }
+  h1 { font-size: 1.8rem; }
+  article { padding: 1.1rem; }
+}
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<main>
+
+<header>
+  <h1>Architecture review: the voxel map engine</h1>
+  <p class="small muted">untitled-brawler · 2026-10-20 · scope: <code>crates/voxel_map_engine</code> and its consumers in <code>server</code>, <code>client</code>, <code>protocol</code>, <code>nostr_map_persistence</code></p>
+  <div class="legend">
+    <span><i class="sw"></i> module</span>
+    <span><svg width="24" height="6" aria-hidden="true"><line x1="0" y1="3" x2="24" y2="3" stroke="currentColor" stroke-width="2" stroke-dasharray="5 5"/></svg> seam</span>
+    <span><svg width="24" height="6" aria-hidden="true"><line x1="0" y1="3" x2="24" y2="3" stroke="#c2410c" stroke-width="2"/></svg> leak across a seam</span>
+    <span><i class="sw deep"></i> deep module</span>
+    <span><i class="sw hid"></i> implementation hidden behind an interface</span>
+  </div>
+  <div class="intro">
+    <p><strong>One root cause.</strong> No module owns a Map Instance's state, and I think every other complaint about this crate traces back to that. The state sits on 1 struct with 10 pub fields, 8 more structs the engine inserts a frame later, 2 structs the server must insert, and 1 system-local cache. Nothing can enforce an invariant, so invariants live in Query tuples, <code>debug_assert!</code>s and consumer discipline, and <code>lib.rs</code> exports all of it through a glob prelude. The algorithms (propagator, palette, greedy meshing, raycast, noise terrain) are deep and I would not touch them. The mud is the glue: <code>lifecycle.rs</code>, <code>generation.rs</code>, <code>config.rs</code>, <code>instance.rs</code>, <code>persistence/</code>.</p>
+    <p class="muted small">No <code>CONTEXT.md</code> or ADRs exist. I took the domain nouns below from the code: Map Instance, Chunk, Column, Chunk Ticket, Chunk Envelope, Overworld, Homebase.</p>
+  </div>
+</header>
+
+<section class="candidates">
+
+<!-- C1 -->
+<article id="c1">
+  <div class="titlerow">
+    <h2>1. Let the Map Instance own its pipeline state</h2>
+    <span class="badge strong">Strong</span><span class="badge tag">in-process</span>
+  </div>
+  <p class="mono">voxel_map_engine/src/{instance.rs, lifecycle.rs:223-327, generation.rs:31-37, config.rs, lib.rs:25-27} · server/src/map/mod.rs:405-515,1099 · client/src/transition.rs:115-150 · tests: lifecycle.rs:15-33, chunk_sync.rs:26-52, physics_isolation.rs:128-140</p>
+
+  <div class="pair">
+    <div class="panel">
+      <div class="lbl">before · one map entity, 16 pieces, 3 owners, 2 frames</div>
+      <div class="lbl">consumer inserts (frame 0)</div>
+      <div class="chips">
+        <span class="chip">VoxelMapInstance</span><span class="chip">VoxelMapConfig</span><span class="chip">MapDimensions</span>
+        <span class="chip">VoxelGenerator <span class="leak-ink">shape = size+2</span></span><span class="chip">Transform</span>
+      </div>
+      <div class="lbl">engine inserts (frame 1, only if VoxelGenerator present)</div>
+      <div class="chips">
+        <span class="chip late">PendingChunks</span><span class="chip late">PendingRemeshes</span><span class="chip late">TicketLevelPropagator</span><span class="chip late">ChunkWorkBudget</span>
+        <span class="chip late">GenQueue</span><span class="chip late">PendingSaves</span><span class="chip late">ChunkWorkTracker</span><span class="chip late">PendingEntitySpawns</span>
+      </div>
+      <div class="lbl">server must also insert, or saves silently never run</div>
+      <div class="chips">
+        <span class="chip leak">StoreBackend&lt;IVec3, ChunkFileEnvelope, FsChunkStore&gt;</span><span class="chip leak">PendingStoreOps</span>
+      </div>
+      <div class="lbl">two switches for one intent</div>
+      <div class="chips">
+        <span class="chip leak">Resource ChunkGenerationEnabled</span><span class="chip leak">VoxelMapConfig.generates_chunks</span>
+      </div>
+      <p class="note">A 12-tuple Query, written out twice, reads all of it (<code>lifecycle.rs:330,434</code>). <code>chunk_size</code> supplied 3 times. No despawn path.</p>
+    </div>
+    <div class="panel">
+      <div class="lbl">after · one deep module, one insert</div>
+      <div class="deep">
+        <div class="lbl">interface</div>
+        <div class="code">
+          <div>VoxelMapInstance::bundle(dims, MapMode)</div>
+          <div class="dim">MapMode::Generated{seed, generator, storage}</div>
+          <div class="dim">MapMode::Streamed</div>
+          <div>get_voxel · set_voxel(s) · raycast</div>
+          <div>is_loaded(col) · take_entity_spawns()</div>
+        </div>
+        <div class="rule"></div>
+        <div class="lbl">implementation (private fields)</div>
+        <div class="chips">
+          <span class="chip hid">octree</span><span class="chip hid">propagator</span><span class="chip hid">gen queue</span><span class="chip hid">in-flight tasks</span>
+          <span class="chip hid">remesh heap</span><span class="chip hid">budget</span><span class="chip hid">pending saves</span><span class="chip hid">entity spawns</span><span class="chip hid">shape / chunk_size</span>
+        </div>
+      </div>
+      <p class="note">Systems query <code>(&amp;mut VoxelMapInstance, &amp;GlobalTransform)</code>. <code>ensure_pending_chunks</code> (100 lines) goes away. Client no longer supplies a dummy <code>FlatGenerator</code>.</p>
+    </div>
+  </div>
+
+  <dl class="grid3">
+    <div><dt class="lbl">problem</dt><dd>The Map Instance module is shallow. Its interface is its implementation, so callers enforce every invariant (tracker agrees with task list, levels agree with octree, generator shape agrees with chunk_size).</dd></div>
+    <div><dt class="lbl">solution</dt><dd>Fold the 8 lazily-inserted structs, the propagator and both generation switches into <code>VoxelMapInstance</code> with private fields; one <code>bundle(dims, MapMode)</code> builds the map entity in one command.</dd></div>
+    <div><dt class="lbl">wins</dt><dd><ul>
+      <li>interface: 16 pieces become 1</li><li>locality: invariants live in one impl</li><li>leverage: 4 assembly sites become 1 call</li>
+      <li>delete <code>ensure_pending_chunks</code></li><li>tests build a map in one line</li><li>nothing lost: the 9 systems already run <code>.chain()</code>ed, single-threaded</li>
+    </ul></dd></div>
+  </dl>
+  <p class="note"><strong>Deletion test.</strong> Delete any of the 8 structs today and 2 to 5 systems break; delete the merged field and one impl breaks. Delete the assembly and four consumers each regrow a 5-piece insert list plus the padded-shape math. Concentrates.</p>
+</article>
+
+<!-- C2 -->
+<article id="c2">
+  <div class="titlerow">
+    <h2>2. One definition of "this Column is loaded"</h2>
+    <span class="badge strong">Strong</span><span class="badge tag">in-process</span>
+  </div>
+  <p class="mono">instance.rs:29 · propagator.rs:36 · lifecycle.rs:380-389,527-550,1030-1063 · ticket.rs:132-135 · client/src/map.rs:318-382 · client/src/transition.rs:300-380 · server/src/map/mod.rs:1382,1419,1550,1689,1773,2398-2415 · server/src/chunk_entities.rs:133 · tests/chunk_sync.rs:55-84</p>
+
+  <div class="pair">
+    <div class="panel">
+      <div class="lbl">before · four projections of one fact, 41 external reads</div>
+<pre class="mermaid">
+flowchart TB
+  P[propagator levels] -->|copied each frame| L[instance.chunk_levels]
+  L -.reconciled by scan.-> E[VoxelChunk child entities]
+  D[octree has ChunkData]
+  S1[server: 6 sites<br/>chunk_levels.contains_key] --> L
+  S2[server: push_chunks_to_clients<br/>re-derives base_level + chebyshev] --> P
+  C1[client: receive chunk<br/>chunk_levels.insert col, 0] --> L
+  C2[client: readiness<br/>reads 5 internal fields] --> L
+  C2 --> E
+  S1 --> D
+  classDef leak stroke:#c2410c,stroke-width:2px;
+  class S1,S2,C1,C2 leak
+</pre>
+    </div>
+    <div class="panel">
+      <div class="lbl">after · one record, four methods</div>
+<pre class="mermaid">
+flowchart TB
+  subgraph M[Map Instance]
+    direction TB
+    I["is_loaded(col) · level(col)<br/>receive_chunk(pos, wire)<br/>unload_column(col)"]
+    I -.-> R[columns: HashMap of IVec2 to ColumnState<br/>level · chunks · mesh entity]
+    R -.-> P[propagator]
+  end
+  S[server sites x8] --> I
+  C[client sync + readiness] --> I
+  classDef deep fill:#141b2a,stroke:#141b2a,color:#f3f5fa;
+  classDef hid fill:#e9e8e3,stroke:#9aa5b5,color:#5b6675;
+  class I deep
+  class R,P hid
+</pre>
+    </div>
+  </div>
+
+  <dl class="grid3">
+    <div><dt class="lbl">problem</dt><dd>"Loaded" leaks across the seam as a pub HashMap. The client writes a sentinel level of 0 to keep meshes alive; the server re-derives propagator math to decide what to push; the engine scans every chunk entity per frame to reconcile copies.</dd></div>
+    <div><dt class="lbl">solution</dt><dd>Replace <code>chunk_levels</code> with a private <code>columns</code> record that both the propagator path and the network path write. Expose <code>is_loaded</code>, <code>receive_chunk</code>, <code>unload_column</code>, <code>columns_for_ticket</code>. Move <code>LOAD_LEVEL_THRESHOLD</code> to a field.</dd></div>
+    <div><dt class="lbl">wins</dt><dd><ul>
+      <li>interface: 41 field reads become 4 methods</li><li>locality: streamed and generated share one path</li><li>kills the client sentinel <code>or_insert(0)</code></li>
+      <li>kills the <code>cfg(test)</code> threshold fork</li><li>fixes missing neighbour remesh on receive</li><li>test doubles call production fns</li>
+    </ul></dd></div>
+  </dl>
+  <p class="note"><strong>Deletion test.</strong> Each helper is three lines, but deleting them makes the same three lines reappear at 8 server sites, 3 client sites and 2 test doubles, and it is the only way the field can go private. Justified by locality.</p>
+</article>
+
+<!-- C3 -->
+<article id="c3">
+  <div class="titlerow">
+    <h2>3. Finish the save pump and the Chunk Envelope codec inside the engine</h2>
+    <span class="badge strong">Strong</span><span class="badge tag">local-substitutable</span>
+  </div>
+  <p class="mono">persistence/{mod.rs, fs_chunk.rs, fs_chunk_entities.rs} · lifecycle.rs:527-565 · instance.rs:104 · server/src/map/mod.rs:304-325,517-700,705-800,855-902 · server/src/map/homebase_publication.rs:285-337 · server/src/persistence/mod.rs:99-128,934-1050 · nostr_map_persistence/src/payloads.rs:54-100</p>
+
+  <div class="pair">
+    <div class="panel">
+      <div class="lbl">before · the same six lines in five places, three codecs</div>
+      <div class="copies">
+        <div class="copy"><span class="lbl">engine</span>remove_column_chunks<br/><span class="muted">builds ChunkFileEnvelope inline</span></div>
+        <div class="copy leak"><span class="lbl leak-ink">server</span>enqueue_dirty_chunks<br/><span class="muted">drains dirty_chunks, builds envelope, pushes PendingSave</span></div>
+        <div class="copy leak"><span class="lbl leak-ink">server</span>save_dirty_chunks_flush<br/><span class="muted">same, synchronous, bypasses engine drain</span></div>
+        <div class="copy leak"><span class="lbl leak-ink">server</span>build_overworld_publish_slots<br/><span class="muted">equals-generated then Tombstone, calls store.delete</span></div>
+        <div class="copy leak"><span class="lbl leak-ink">server</span>resolve_terrain_chunk_slot<br/><span class="muted">identical body to the one on the left</span></div>
+        <div class="copy leak"><span class="lbl leak-ink">server tests</span>save_dirty_chunks_sync ×2</div>
+      </div>
+      <div class="lbl">codec</div>
+      <div class="chips">
+        <span class="chip">fs_chunk.rs zstd 3</span><span class="chip leak">server decode_chunk_envelope</span><span class="chip leak">nostr encode zstd 0</span>
+      </div>
+      <p class="note"><code>fs_chunk.rs</code> and <code>fs_chunk_entities.rs</code> are the same store twice. The server also hand-filters <code>pending_saves.queue</code> to dodge a tombstone race the engine's drain would otherwise lose (<code>mod.rs:660</code>).</p>
+    </div>
+    <div class="panel">
+      <div class="lbl">after · persistence is a deep module with one interface</div>
+      <div class="deep">
+        <div class="lbl">interface</div>
+        <div class="code">
+          <div>ChunkStorage::for_dir(map_dir)</div>
+          <div>instance.flush_dirty(&amp;mut storage) → Vec&lt;(IVec3, SaveOpId)&gt;</div>
+          <div>instance.take_content_dirty() → HashSet&lt;IVec3&gt;</div>
+          <div>instance.classify_for_publish(pos, &amp;storage) → Present(env) | Tombstoned | NotLoaded</div>
+          <div>ChunkFileEnvelope::{encode, decode}</div>
+          <div class="dim">messages: ChunkSaveCompleted / ChunkSaveFailed (unchanged)</div>
+        </div>
+        <div class="rule"></div>
+        <div class="lbl">implementation</div>
+        <div class="chips">
+          <span class="chip hid">one generic IVec3-keyed zstd+bincode store</span><span class="chip hid">dirty_chunks / content_dirty_chunks</span>
+          <span class="chip hid">PendingSave queue + tombstone ordering</span><span class="chip hid">CHUNK_SAVE_VERSION</span>
+        </div>
+      </div>
+      <p class="note">Two adapters would make the seam real, a filesystem store in production and an in-memory store in tests. Today every persistence test hits disk via <code>tempfile</code>.</p>
+    </div>
+  </div>
+
+  <dl class="grid3">
+    <div><dt class="lbl">problem</dt><dd>The engine's save path is half built. It knows how to queue, but it needs the server to supply the store, build envelopes, drain by hand and classify tombstones. The <code>Store&lt;K,V&gt;</code> seam has one adapter per type and binds to the filesystem adapter concretely anyway, so it pays the full cost of the generics and returns no leverage.</dd></div>
+    <div><dt class="lbl">solution</dt><dd>Merge the two filesystem stores into one. Give the Map Instance <code>flush_dirty</code>, <code>take_content_dirty</code> and <code>classify_for_publish</code>; give the envelope a single <code>encode/decode</code>. Build storage from the already-present <code>VoxelMapConfig.save_dir</code>. Keep MapMeta and the change-set store on the server.</dd></div>
+    <div><dt class="lbl">wins</dt><dd><ul>
+      <li>locality: 5 envelope builders become 1</li><li>locality: tombstone race fixed where it lives</li><li>one codec, one zstd level</li>
+      <li>two adapters justify the seam</li><li>persistence tests run in memory</li><li>~150 lines leave the server</li>
+    </ul></dd></div>
+  </dl>
+  <p class="note"><strong>Deletion test.</strong> Delete <code>PendingSaves</code> today and five near-identical copies remain in callers. After the move, deleting it removes them. Concentrates.</p>
+</article>
+
+<!-- C4 -->
+<article id="c4">
+  <div class="titlerow">
+    <h2>4. Give the Chunk stage state machine a pure core</h2>
+    <span class="badge strong">Strong</span><span class="badge tag">in-process</span><span class="badge tag">verified 2026-10-20</span>
+  </div>
+  <p class="mono">lifecycle.rs:662-827 (drain_gen_queue), 916-1003 (handle_completed_chunk) · generation.rs (3 spawn_* fns, one caller each) · types.rs:715-746 (ChunkStatus) · tests/lifecycle.rs:45-63</p>
+
+  <div class="pair">
+    <div class="panel">
+      <div class="lbl">before · one state machine in four files, testable only via 200-frame loops</div>
+<pre class="mermaid">
+flowchart LR
+  T[types.rs<br/>ChunkStatus::next / max_for_level] --> D
+  D[lifecycle.rs<br/>drain_gen_queue<br/>decides stage, lazy deletion,<br/>uniform shortcut] --> G
+  G[generation.rs<br/>spawn_terrain / features / mesh<br/>async half of drain] --> C
+  C[lifecycle.rs<br/>handle_completed_chunk<br/>stale discard, from_disk dirty rule,<br/>re-push to queue] --> D
+  X[tests: tick_until 200 frames<br/>against AsyncComputeTaskPool] -.-> D
+  classDef leak stroke:#c2410c,stroke-width:2px;
+  class X leak
+</pre>
+    </div>
+    <div class="panel">
+      <div class="lbl">after · two pure functions and one spawner</div>
+<pre class="mermaid">
+flowchart LR
+  subgraph S[Chunk pipeline]
+    direction LR
+    P["plan(status, level, fill, in_flight, bounds) → Step"] --> W["spawn_stage(step) → Task"]
+    W --> A["apply(instance, ChunkGenResult)"]
+  end
+  TT[table tests on plan and apply<br/>no App, no task pool] --> P
+  TT --> A
+  classDef deep fill:#141b2a,stroke:#141b2a,color:#f3f5fa;
+  class P,A deep
+</pre>
+    </div>
+  </div>
+
+  <dl class="grid3">
+    <div><dt class="lbl">problem</dt><dd>The rules that decide what happens to a chunk next are spread across decision, execution, completion and enum, so understanding "a chunk gets loaded" takes 14 hops through 12 files and a minimum of 4 frames. The only tests are wall-clock dependent integration loops, and they assert on <code>chunk_levels.len()</code>.</dd></div>
+    <div><dt class="lbl">solution</dt><dd>Extract <code>plan</code> and <code>apply</code> as pure functions. <code>generation.rs</code> folds into the spawner. Systems become thin loops: plan, spawn, poll, apply.</dd></div>
+    <div><dt class="lbl">wins</dt><dd><ul>
+      <li>locality: stage rules in one place</li><li>tests become tables instead of frame loops</li><li>interface: two fns replace four files' worth</li><li>the 4-frame minimum becomes visible and tunable</li>
+    </ul></dd></div>
+  </dl>
+  <p class="note"><strong>Deletion test.</strong> The rules exist regardless. Today task plumbing interleaves them. Concentrated, the plumbing becomes a pass-through you could swap. Concentrates.</p>
+
+  <div class="panel">
+    <div class="lbl">follow-up investigation · what a full read of the two ranges showed</div>
+    <p class="small"><strong>The decision is already pure.</strong> Every stage rule reads only six facts: chunk status, fill type, effective level, column loaded, in flight, in bounds. Budget, in-flight cap, per-frame cap and terrain batching are loop control. They decide <em>whether</em> to continue, never <em>which</em> step a chunk gets. The disk-load attempt lives inside the async task (<code>generation.rs:60-90</code>), so <code>plan</code> never sees it. 14 of about 18 rules become table tests. <code>apply</code> needs only <code>&amp;mut VoxelMapInstance</code>; mesh and entity spawning come back as returned instructions for the system to materialize.</p>
+    <p class="small"><strong>No dependency on candidate 1.</strong> <code>plan</code> takes a value snapshot and <code>apply</code> reads fields already on the instance. The merge would shorten a 9-argument system signature and nothing more. This candidate can go first, and I would consider it, because its tests would catch regressions from the other three.</p>
+    <div class="lbl">latent bugs the table exposed</div>
+    <div class="sites">
+      <div>lifecycle.rs:690-696 <span class="muted">the loop pops a work item, then breaks on a cap. The popped chunk is dropped and nothing re-enqueues it.</span></div>
+      <div>lifecycle.rs:929-934 <span class="muted">Terrain/Mesh results are inserted into the octree with no check that the column is still loaded; the Features path has that guard (:941), this one does not. Orphaned chunks never get cleaned up.</span></div>
+      <div>generation.rs:65-74 + lifecycle.rs:962-989 <span class="muted">a disk hit builds a mesh for any mixed chunk regardless of saved stage, and completion spawns a mesh entity without dedup; a chunk saved at Terrain gets two mesh entities.</span></div>
+      <div>lifecycle.rs:721-724 <span class="muted">stage cap uses the level snapshotted at enqueue time, not the live level.</span></div>
+    </div>
+    <p class="small"><strong>The biggest risk is behaviour drift during extraction.</strong> Decide up front whether the dropped-on-break item and the snapshot-level cap are bugs to fix or behaviour to preserve, pin the choice as a table row, and land the extraction with current semantics before fixing either in a separate commit.</p>
+  </div>
+</article>
+
+<!-- C5 -->
+<article id="c5">
+  <div class="titlerow">
+    <h2>5. Padded coordinates as a type; the Chunk entity as a record</h2>
+    <span class="badge explore">Worth exploring</span><span class="badge tag">in-process</span>
+  </div>
+  <p class="mono">api.rs:118-123,231-236,273-278 · instance.rs:142-147,172,184 · generation.rs:187-196 · lifecycle.rs:1026,1191-1193 · terrain.rs (place_features) · chunk.rs · four test files hardcoding 18*18*18</p>
+
+  <div class="pair">
+    <div class="panel">
+      <div class="lbl">before · the +1 is hand-written at seven sites</div>
+      <div class="sites">
+        <div>api.rs:118 <span class="muted">(local.x + 1) as u32 …</span></div>
+        <div>api.rs:231 <span class="muted">(local.x + 1) as u32 …</span></div>
+        <div>api.rs:273 <span class="muted">(local.x + 1) as u32 …</span></div>
+        <div>instance.rs:142 <span class="muted">padded = [x+1, y+1, z+1]</span></div>
+        <div>instance.rs:172 · :184 <span class="muted">neighbour padding writes</span></div>
+        <div>generation.rs:187 <span class="muted">surface height map</span></div>
+        <div>lifecycle.rs:1026 <span class="muted">- Vec3::ONE</span></div>
+        <div>tests ×4 <span class="muted">PADDED_VOLUME_16 = 18*18*18</span></div>
+      </div>
+      <p class="note">Also, <code>poll_remesh_tasks</code> scans every chunk entity to find the one it just remeshed; <code>VoxelChunk.lod_level</code> is always 0.</p>
+    </div>
+    <div class="panel">
+      <div class="lbl">after · one function owns padding; the column record owns the mesh entity</div>
+      <div class="deep">
+        <div class="code">
+          <div>instance.padded_index(local: IVec3) → usize</div>
+          <div>ChunkData::air(dims) <span class="dim">// replaces 18*18*18 in tests</span></div>
+          <div class="dim">ColumnState { level, chunks: [(ChunkData, Option&lt;Entity&gt;)] }</div>
+          <div class="dim">// poll_remesh: O(1) lookup, despawn folds into unload_column</div>
+        </div>
+      </div>
+      <p class="note">A padding change touches one file instead of four.</p>
+    </div>
+  </div>
+
+  <dl class="grid3">
+    <div><dt class="lbl">problem</dt><dd>The padded-shape invariant is part of the interface. Callers and tests must know chunks are 18³ and that index = local + 1. Finding the mesh entity for a chunk means scanning all of them.</dd></div>
+    <div><dt class="lbl">solution</dt><dd>Route every inline <code>+1</code> through one method; store the mesh <code>Entity</code> in the column record introduced by candidate 2; delete <code>lod_level</code>.</dd></div>
+    <div><dt class="lbl">wins</dt><dd><ul>
+      <li>locality: padding rule in one place</li><li>interface: tests stop knowing 18³</li><li>per-frame scans become lookups</li>
+    </ul></dd></div>
+  </dl>
+  <p class="note"><strong>Deletion test.</strong> Pure concentration of a rule that already exists in seven copies. Small on its own; rides along with candidate 2.</p>
+</article>
+
+<!-- C6 -->
+<article id="c6">
+  <div class="titlerow">
+    <h2>6. Let the protocol crate own the wire Chunk</h2>
+    <span class="badge spec">Speculative</span><span class="badge tag">ports &amp; adapters</span>
+  </div>
+  <p class="mono">protocol/src/map/chunk.rs:11-17 · palette.rs:23-45 · server/src/map/mod.rs:2456 · client/src/map.rs:348</p>
+
+  <div class="pair">
+    <div class="panel">
+      <div class="lbl">before · in-memory layout is the wire format</div>
+<pre class="mermaid">
+flowchart LR
+  E[engine PalettedChunk<br/>18³ padded, palette variants] -->|clone| P[protocol ChunkDataSync]
+  P -->|network| C[client ChunkData::from_voxels]
+  classDef leak stroke:#c2410c,stroke-width:2px;
+  class E,P leak
+</pre>
+      <p class="note">A palette or padding change is a protocol change. Padding ships 42% extra voxels when a chunk is not single-valued.</p>
+    </div>
+    <div class="panel">
+      <div class="lbl">after · protocol DTO with adapters each side</div>
+<pre class="mermaid">
+flowchart LR
+  E[engine] -->|"to_wire()"| W[protocol WireChunk<br/>16³, stable]
+  W -->|network| W2[protocol WireChunk]
+  W2 -->|"receive_chunk(wire)"| C[engine on client]
+  classDef deep fill:#141b2a,stroke:#141b2a,color:#f3f5fa;
+  class W,W2 deep
+</pre>
+    </div>
+  </div>
+
+  <dl class="grid3">
+    <div><dt class="lbl">problem</dt><dd>One engine type crosses the network seam unchanged, so the palette encoding and 18³ padding are now protocol.</dd></div>
+    <div><dt class="lbl">solution</dt><dd>Either declare <code>PalettedChunk</code> the stable wire type on purpose, or give protocol its own DTO with <code>From</code> adapters. Candidate 2's <code>receive_chunk</code> is the natural place for the client-side adapter.</dd></div>
+    <div><dt class="lbl">wins</dt><dd><ul>
+      <li>engine layout can change without a protocol bump</li><li>smaller payloads</li>
+    </ul></dd></div>
+  </dl>
+  <p class="note"><strong>Deletion test.</strong> One adapter today, so this is a hypothetical seam. Only worth building when the palette or padding actually changes. I listed it so the coupling becomes a deliberate decision.</p>
+</article>
+
+<article class="plain">
+  <h2>Delete outright, no design needed</h2>
+  <ul>
+    <li><code>mesh_cache.rs</code>. Nothing in <code>src/</code> references it, and <code>ChunkData.hash</code> goes stale after <code>set_voxel</code>, so a hash-keyed cache would serve wrong meshes</li>
+    <li><code>LoadState</code> in <code>ticket.rs</code> has no reader</li>
+    <li><code>seed_from_id</code> is the identity function</li>
+    <li>the <code>tick</code> Local in <code>update_chunks</code> is incremented and never read</li>
+    <li>the engine never reads <code>VoxelMapConfig.{seed, generation_version, spawning_distance}</code>, yet <code>new</code> asserts on one of them</li>
+    <li><code>VoxelChunk.lod_level</code> is always 0</li>
+    <li><code>ChunkTicket::player</code> doc says radius 200, code says 4</li>
+    <li>examples insert <code>PendingChunks::default()</code> by hand, which the engine also inserts</li>
+    <li>the glob <code>prelude</code>. Once 1 to 3 land, export the interface by name</li>
+  </ul>
+</article>
+
+<article class="plain fine">
+  <h2>Deep already, leave alone</h2>
+  <p class="small"><code>propagator.rs</code> (pure, 15 tests; only relocate its two constants) · <code>palette.rs</code> · <code>meshing.rs</code> · <code>raycast.rs</code> · <code>brush.rs</code> · <code>placement.rs</code> · the <code>VoxelGeneratorImpl</code> seam (3 adapters) and <code>terrain.rs</code> Reflect types (they are the <code>.terrain.ron</code> schema) · the shape of <code>VoxelWorld</code> (entity-keyed get/set/raycast is the right outward interface) · <code>ChunkTicket</code> · <code>ChunkSaveCompleted/Failed</code> as the outward persistence seam · the server's voxel edit handlers (they use <code>VoxelWorld</code> correctly) · the Nostr/Blossom publish machinery, whose engine contact is confined to the two copies named in candidate 3.</p>
+</article>
+
+</section>
+
+<section class="top" id="top-recommendation">
+  <div class="lbl">top recommendation</div>
+  <h2><a href="#c1">1. Let the Map Instance own its pipeline state</a></h2>
+  <p>It is the root cause both audits named, and it is the precondition for most of the rest. Candidates 2 and 3 cannot make <code>chunk_levels</code>, <code>dirty_chunks</code> or <code>PendingSaves</code> private until one struct owns them, and candidate 4 needs a single place to read state from. It costs nothing in parallelism because the nine systems are already chained. I would do it first. Then 2 and 3 are mostly moving code behind fields that are now private.</p>
+  <p class="dim">Suggested order: 1 → 2 (+5) → 3, with 4 anywhere since it is independent; its table tests would also protect the other refactors. Record 6 as a decision rather than scheduling it as work.</p>
+</section>
+
+</main>

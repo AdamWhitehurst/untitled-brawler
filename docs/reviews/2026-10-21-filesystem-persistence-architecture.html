@@ -1,0 +1,420 @@
+<title>Filesystem Persistence Review</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column; each candidate is a card with a before/after pair of panels side by side, stacking on phones. Same token set as the Map Instance review so the two read as one series. */
+:root {
+  --bg: #f6f5f2; --surface: #ffffff; --panel: #f0efeb; --fg: #1c2430; --muted: #5b6675; --line: #d8d6cf;
+  --accent: #3f4fb8; --deep: #141b2a; --deep-2: #1f2a40; --deep-fg: #f3f5fa; --deep-muted: #aeb8d8;
+  --warn: #b7791f; --warn-bg: #fbf1dc; --leak: #c2410c; --leak-bg: #fde8e0; --good: #1f7a4d; --good-bg: #e2f3ea; --hidden-bg: #e9e8e3;
+  --display: "Newsreader", Georgia, "Times New Roman", serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161d; --surface: #1a2029; --panel: #141921; --fg: #e6e9ef; --muted: #9aa5b5; --line: #2c3442;
+    --accent: #8d9bf0; --deep: #0b0f18; --deep-2: #161d2c; --deep-fg: #f3f5fa; --deep-muted: #9fa9c9;
+    --warn: #e0a84a; --warn-bg: #30261a; --leak: #f08a5b; --leak-bg: #3a2219; --good: #5fc48f; --good-bg: #16301f; --hidden-bg: #222935;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161d; --surface: #1a2029; --panel: #141921; --fg: #e6e9ef; --muted: #9aa5b5; --line: #2c3442;
+  --accent: #8d9bf0; --deep: #0b0f18; --deep-2: #161d2c; --deep-fg: #f3f5fa; --deep-muted: #9fa9c9;
+  --warn: #e0a84a; --warn-bg: #30261a; --leak: #f08a5b; --leak-bg: #3a2219; --good: #5fc48f; --good-bg: #16301f; --hidden-bg: #222935;
+  color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 15px; line-height: 1.55; margin: 0; }
+main { max-width: 64rem; margin: 0 auto; padding-block: 3rem 4rem; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); display: grid; gap: 3rem; }
+h1, h2 { font-family: var(--display); font-weight: 500; text-wrap: balance; margin: 0; line-height: 1.15; }
+h1 { font-size: 2.25rem; }
+h2 { font-size: 1.55rem; }
+a { color: inherit; text-decoration: underline; text-decoration-color: var(--accent); text-underline-offset: 3px; }
+p { margin: 0; }
+code { font-family: var(--mono); font-size: 0.9em; background: var(--hidden-bg); padding: 0.05em 0.3em; border-radius: 3px; }
+.deep code, .top code { background: rgba(255,255,255,0.08); }
+.lbl { font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.muted { color: var(--muted); }
+.small { font-size: 0.82rem; }
+.mono { font-family: var(--mono); font-size: 0.78rem; color: var(--muted); overflow-wrap: anywhere; }
+header { display: grid; gap: 0.9rem; }
+.legend { display: flex; flex-wrap: wrap; gap: 1rem 1.25rem; font-size: 0.78rem; color: var(--muted); align-items: center; }
+.legend span { display: inline-flex; align-items: center; gap: 0.45rem; }
+.sw { display: inline-block; width: 20px; height: 12px; border: 1px solid var(--muted); background: var(--surface); }
+.sw.deep { background: linear-gradient(135deg, var(--deep), var(--deep-2)); border-color: var(--deep); }
+.sw.hid { background: var(--hidden-bg); border-color: var(--line); opacity: 0.6; }
+.intro { border: 1px solid var(--line); background: var(--surface); border-radius: 8px; padding: 1rem 1.15rem; display: grid; gap: 0.6rem; font-size: 0.95rem; }
+.candidates { display: grid; gap: 2.5rem; }
+article { border: 1px solid var(--line); background: var(--surface); border-radius: 12px; padding: 1.5rem; display: grid; gap: 1.2rem; }
+.titlerow { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 0.75rem; }
+.badge { font-size: 0.72rem; font-weight: 600; padding: 0.2rem 0.5rem; border-radius: 4px; letter-spacing: 0.02em; }
+.badge.strong { background: var(--good-bg); color: var(--good); }
+.badge.explore { background: var(--warn-bg); color: var(--warn); }
+.badge.tag { background: var(--hidden-bg); color: var(--muted); font-weight: 500; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.panel { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 0.9rem 1rem; min-width: 0; display: grid; gap: 0.6rem; align-content: start; }
+.panel pre.mermaid { margin: 0; overflow-x: auto; background: transparent; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.chip { font-size: 0.74rem; border: 1px solid var(--muted); background: var(--surface); padding: 0.12rem 0.5rem; border-radius: 4px; font-family: var(--mono); overflow-wrap: anywhere; }
+.chip.leak { border-color: var(--leak); background: var(--leak-bg); }
+.chip.hid { border-color: var(--deep-muted); background: transparent; color: var(--deep-muted); opacity: 0.75; }
+.deep { background: linear-gradient(135deg, var(--deep), var(--deep-2)); color: var(--deep-fg); border-radius: 10px; padding: 1rem 1.1rem; display: grid; gap: 0.5rem; }
+.deep .lbl { color: var(--deep-muted); }
+.deep .code { font-family: var(--mono); font-size: 0.78rem; display: grid; gap: 0.15rem; overflow-x: auto; }
+.deep .dim { color: var(--deep-muted); }
+.deep .rule { border-top: 1px dashed var(--deep-muted); margin-block: 0.4rem; }
+.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; font-size: 0.92rem; margin: 0; }
+.grid3 > div { min-width: 0; display: grid; gap: 0.3rem; align-content: start; }
+.grid3 dd { margin: 0; }
+.grid3 ul { margin: 0; padding-left: 1.1rem; display: grid; gap: 0.15rem; }
+.note { font-size: 0.82rem; color: var(--muted); }
+.bands { display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); gap: 0.3rem; }
+.band { border-left: 4px solid var(--muted); background: var(--surface); padding: 0.3rem 0.5rem; font-family: var(--mono); font-size: 0.72rem; min-width: 0; overflow-wrap: anywhere; }
+.band.leak { border-left-color: var(--leak); background: var(--leak-bg); }
+.sites { display: grid; gap: 0.3rem; }
+.sites .band { font-size: 0.76rem; }
+.sites .band span { font-family: var(--body); color: var(--muted); }
+.callout { border: 1px solid var(--warn); background: var(--warn-bg); border-radius: 6px; padding: 0.6rem 0.8rem; font-size: 0.88rem; }
+.option { border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem 0.75rem; font-size: 0.88rem; display: grid; gap: 0.25rem; }
+.option.good { border-color: var(--good); background: var(--good-bg); }
+.plain { display: grid; gap: 0.6rem; }
+.plain ul { margin: 0; padding-left: 1.2rem; columns: 2; column-gap: 1.5rem; font-size: 0.92rem; }
+.plain ul li { break-inside: avoid; margin-bottom: 0.2rem; }
+.fine { border-color: var(--good); background: color-mix(in srgb, var(--good-bg) 45%, var(--surface)); }
+.bugs { border-color: var(--leak); background: color-mix(in srgb, var(--leak-bg) 35%, var(--surface)); }
+.link { border-color: var(--accent); }
+.top { background: linear-gradient(135deg, var(--deep), var(--deep-2)); color: var(--deep-fg); border-radius: 12px; padding: 2rem; display: grid; gap: 0.75rem; }
+.top .lbl { color: var(--deep-muted); }
+.top p { color: var(--deep-fg); font-size: 0.95rem; }
+.top .dim { color: var(--deep-muted); }
+.top h2 a { text-decoration-color: var(--deep-muted); }
+@media (max-width: 720px) {
+  .pair, .grid3 { grid-template-columns: 1fr; }
+  .plain ul { columns: 1; }
+  h1 { font-size: 1.8rem; }
+  article { padding: 1.1rem; }
+}
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<main>
+
+<header>
+  <h1>Architecture review: filesystem persistence</h1>
+  <p class="small muted">untitled-brawler · 2026-10-21 · scope: the save directory on disk and the machinery that reads and writes it. <code>git/bevy-persistence</code>, <code>voxel_map_engine/src/persistence/</code>, <code>server/src/persistence/</code>, and the server systems that touch them. The Map Instance itself is covered by the <a href="https://claude.ai/artifact/KJ3q3eYoMVga2VPHgPQ79x">earlier review</a> and is out of scope here.</p>
+  <div class="legend">
+    <span><i class="sw"></i> module</span>
+    <span><svg width="24" height="6" aria-hidden="true"><line x1="0" y1="3" x2="24" y2="3" stroke="currentColor" stroke-width="2" stroke-dasharray="5 5"/></svg> seam</span>
+    <span><svg width="24" height="6" aria-hidden="true"><line x1="0" y1="3" x2="24" y2="3" stroke="#c2410c" stroke-width="2"/></svg> leak across a seam</span>
+    <span><i class="sw deep"></i> deep module</span>
+    <span><i class="sw hid"></i> implementation hidden behind an interface</span>
+  </div>
+  <div class="intro">
+    <p><strong>The verdict.</strong> Over-engineered and a ball of mud at the same time, and for one reason. The save directory is a single thing with a fixed layout, and it is modelled as eleven independent generic key-value stores. The generics in <code>bevy-persistence</code>, <code>Store&lt;K,V&gt;</code>, <code>StoreBackend&lt;K,V,B&gt;</code> and <code>PendingStoreOps&lt;K,V&gt;</code>, promise a seam where the backend varies. Nothing varies. Every adapter in the repo is the filesystem, no app-level fake exists, and half the stores are called synchronously through <code>.0</code> anyway. So callers pay the full cost of the abstraction and get no leverage back. The bill is nine components on one entity, a 14-wide query, five hand-written drain loops and seven copies of tmp-then-rename.</p>
+    <p><strong>What is already fine.</strong> The revision promote / validate / quarantine logic in <code>server/src/persistence/mod.rs:565-1060</code> is coherent and has about twenty tests. The <code>AsyncStore</code> seam for Blossom and Nostr is a real seam, with three production adapters and two fakes. Neither is touched below.</p>
+    <p class="muted small">No <code>CONTEXT.md</code> or ADRs exist. I took the domain nouns from the code: Map Instance, Chunk, Chunk Envelope, Map Meta, Change Set, Revision, Accepted Head, Local Head, Publish Journal, Publish Draft.</p>
+  </div>
+</header>
+
+<section class="candidates">
+
+<!-- C1 -->
+<article id="c1">
+  <div class="titlerow">
+    <h2>1. One module owns the save directory: <code>MapSaveDir</code></h2>
+    <span class="badge strong">Strong</span><span class="badge tag">in-process</span>
+  </div>
+  <p class="mono">voxel_map_engine/src/persistence/{mod.rs, fs_chunk.rs, fs_chunk_entities.rs} · server/src/persistence/{mod.rs:241-460, 479-520, 536-565, 865-1090, fs_map_meta.rs, fs_map_entities.rs} · callers: ~30 direct Store::load/save sites in server/src/map/{mod.rs, remote_publish.rs, homebase_publication.rs}</p>
+
+  <div class="pair">
+    <div class="panel">
+      <div class="lbl">before · one directory, eleven owners of its layout</div>
+      <div class="lbl">each adapter joins its own file-name literal and carries its own tmp/rename</div>
+      <div class="chips">
+        <span class="chip">FsChunkStore → terrain/chunk_x_y_z.bin · zstd</span>
+        <span class="chip">FsChunkEntitiesStore → entities/chunk_x_y_z.entities.bin · zstd</span>
+        <span class="chip">FsMapMetaStore → map.meta.bin</span>
+        <span class="chip">FsMapEntitiesStore → entities.bin</span>
+        <span class="chip">FsAcceptedMapHeadStore → accepted_head.bin</span>
+        <span class="chip">FsLocalMapHeadStore → local_head.bin</span>
+        <span class="chip">FsMapChangeSetStore → change_set.bin</span>
+        <span class="chip">FsRemotePublishJournalStore → remote_publish_journal.bin</span>
+        <span class="chip">FsLocalUnpublishedPublishDraftStore → unpublished/&lt;id&gt;.bin</span>
+      </div>
+      <div class="lbl">the layout is re-typed as strings elsewhere</div>
+      <div class="chips">
+        <span class="chip leak">bootstrap_filesystem_revision lists all four content paths again (dead)</span>
+        <span class="chip leak">existing_revision_dir_is_complete → "map.meta.bin"</span>
+        <span class="chip leak">delete_materialized_chunk(_entities) (dead)</span>
+        <span class="chip leak">active_revision · revisions/ · staging/ (raw fs)</span>
+      </div>
+      <div class="lbl">tmp → rename → version check, hand-written</div>
+      <div class="bands">
+        <div class="band leak">fs_chunk</div><div class="band leak">fs_chunk_entities</div><div class="band leak">fs_map_meta</div><div class="band leak">fs_map_entities</div><div class="band leak">atomic_save_bincode</div><div class="band leak">quarantine</div><div class="band leak">active pointer</div>
+      </div>
+      <p class="note">Two types are named <code>EntityFileEnvelope</code>. The engine's is version 3 with a <code>spawns</code> field, the server's is version 1 with an <code>entities</code> field, and they are aliased at import to coexist. Heads and change set are rooted at the canonical dir, drafts at the active revision dir, content at whichever the restore picked. Four store components get re-inserted after a restore to re-point them.</p>
+    </div>
+
+    <div class="panel">
+      <div class="lbl">after · one deep module, typed slots</div>
+      <div class="deep">
+        <div class="lbl">interface</div>
+        <div class="code">
+          <div>MapSaveDir::open(canonical_dir) → recovers pointer, resolves active</div>
+          <div>dir.meta() · dir.map_entities() · dir.change_set()</div>
+          <div>dir.accepted_head() · dir.local_head() · dir.journal() · dir.drafts()</div>
+          <div>dir.chunk(pos) · dir.chunk_entities(pos)</div>
+          <div class="dim">   each is a Slot&lt;T&gt;: read() → Option&lt;T&gt; · write(&amp;T) · delete()</div>
+          <div>dir.stage(revision) → MapSaveDir (staging) · dir.promote(staged)</div>
+          <div class="dim">ChunkFileEnvelope { encode, decode } stays public for the wire</div>
+        </div>
+        <div class="rule"></div>
+        <div class="lbl">implementation (private)</div>
+        <div class="chips">
+          <span class="chip hid">layout table: one line per file</span>
+          <span class="chip hid">atomic_write(path, bytes), once</span>
+          <span class="chip hid">versioned&lt;T&gt; codec, zstd flag per slot</span>
+          <span class="chip hid">canonical vs active root per slot</span>
+          <span class="chip hid">revision dir naming · pointer swap</span>
+        </div>
+      </div>
+      <p class="note">A caller that today writes <code>FsAcceptedMapHeadStore { map_dir: Arc::new(dir) }.save(&amp;(), &amp;rev)</code> writes <code>dir.accepted_head().write(&amp;rev)</code>. <code>install_active_revision_store_backends</code> becomes <code>dir.activate()</code>, no component churn.</p>
+    </div>
+  </div>
+
+  <dl class="grid3">
+    <div><dt class="lbl">problem</dt><dd>The layout of one directory is spread across nine adapters and four raw-fs sites, and the atomic-write routine is copied seven times. The modules are shallow. Each adapter's interface, meaning its file name, its codec and its version constant, is its whole implementation.</dd></div>
+    <div><dt class="lbl">solution</dt><dd>Fold all nine adapters, the two path helpers, the revision naming and the pointer swap into one <code>MapSaveDir</code> with typed slots. One codec, one atomic write, one version check per slot. Staging is the same type pointed at a different root.</dd></div>
+    <div><dt class="lbl">wins</dt><dd><ul>
+      <li>locality: one layout table</li><li>locality: one tmp/rename, one version check</li><li>leverage: ~30 call sites learn one type</li>
+      <li>interface: 9 adapters + 2 helpers → 1 module</li><li>delete the duplicate <code>EntityFileEnvelope</code></li><li>tests: layout round-trips in one file</li>
+    </ul></dd></div>
+  </dl>
+  <p class="note"><strong>Deletion test.</strong> Delete the nine adapters today and each caller regrows a file-name literal and a tmp/rename. Delete <code>MapSaveDir</code> after the move and all of that regrows in one place. Concentrates.</p>
+</article>
+
+<!-- C2 -->
+<article id="c2">
+  <div class="titlerow">
+    <h2>2. One save queue per map instead of a component pair per type</h2>
+    <span class="badge strong">Strong</span><span class="badge tag">in-process</span>
+  </div>
+  <p class="mono">git/bevy-persistence/src/{backend.rs, ops.rs} · voxel_map_engine/src/lifecycle.rs:145-175, 558-617 · server/src/map/mod.rs:68, 312-365, 380-402, 511-712, 845-955, 998-1093 · server/src/chunk_entities.rs:45-427 · server/src/map/preflight.rs:45-135 · server/src/map/preparation.rs:96-121 · server/src/persistence/mod.rs:973-993</p>
+
+  <div class="pair">
+    <div class="panel">
+      <div class="lbl">before · nine components, five drains, three flushes</div>
+<pre class="mermaid">
+flowchart TB
+  subgraph E[map entity]
+    direction TB
+    B1[StoreBackend meta] --- O1[PendingStoreOps meta]
+    B2[StoreBackend map entities] --- O2[PendingStoreOps map entities]
+    B3[StoreBackend chunk] --- O3[PendingStoreOps chunk]
+    B4[StoreBackend chunk entities] --- O4[PendingStoreOps chunk entities]
+    B5[StoreBackend x5: change set, heads, journal, drafts<br/>no ops, always called sync via .0]
+  end
+  D1[drain_pending_saves] --> O3
+  D2[forward_map_meta_save_completions] --> O1
+  D3[poll_map_persistence_preflight<br/>its own ops on a 2nd entity] --> B1
+  D4[poll_map_entities] --> O2
+  D5[poll_chunk_entity_ops] --> O4
+  F1[save_world_on_shutdown<br/>spawn then flush x3] --> O1
+  F1 --> O2
+  F1 --> O3
+  F2[save_all_chunk_entities_on_exit] --> O4
+  S[save_dirty_chunks_debounced<br/>14-wide query] --> B5
+  S --> O1
+  S --> O2
+  classDef leak stroke:#c2410c,stroke-width:2px;
+  class B5,D3,F1,S leak
+</pre>
+      <p class="note"><code>StoreBackend&lt;K,V,B&gt;</code> is a newtype over <code>B</code> plus <code>PhantomData</code>. Its only job is the <code>Component</code> derive. Callers unwrap <code>.0</code> at every use. <code>SaveOpId</code> is threaded through all four pairs but only the meta save ever attaches one, so the id arms for chunks and entities are dead, and <code>log_save_errors</code> throws away every id-less completion.</p>
+    </div>
+
+    <div class="panel">
+      <div class="lbl">after · two components, one drain</div>
+<pre class="mermaid">
+flowchart TB
+  subgraph E[map entity]
+    direction TB
+    D[MapSaveDir]
+    Q["MapSaveQueue<br/>open_batch() · enqueue(batch, Write | Delete)<br/>poll() → Vec&lt;BatchOutcome&gt; · flush_blocking()"]
+  end
+  Q -.-> I[tasks on AsyncComputeTaskPool<br/>FIFO per key · one in flight per key · coalesce]
+  X[one drain system] --> Q
+  X --> M[BatchCompleted / BatchFailed<br/>one message per batch outcome]
+  P[producers: engine eviction, debounced save,<br/>chunk entity handlers, shutdown] --> Q
+  classDef deep fill:#141b2a,stroke:#141b2a,color:#f3f5fa;
+  classDef hid fill:#e9e8e3,stroke:#9aa5b5,color:#5b6675;
+  class Q,D deep
+  class I hid
+</pre>
+      <p class="note">A <code>SaveJob</code> is a write with a <code>SaveKey</code> and a producer closure, or a delete of a key. The closure builds the Chunk Envelope once, inside the task, when it runs. The queue writes through <code>MapSaveDir</code>, so <code>Store&lt;K,V&gt;</code> and <code>StoreBackend</code> leave the server entirely.</p>
+    </div>
+  </div>
+
+  <dl class="grid3">
+    <div><dt class="lbl">problem</dt><dd>The async-dispatch module is instantiated once per value type. One map therefore carries nine components, every consumer re-writes the poll, drain and forward loop, and three shutdown paths each spawn then flush by hand. None of that machinery hides anything. Every caller sees tasks, completions and errors.</dd></div>
+    <div><dt class="lbl">solution</dt><dd>One <code>MapSaveQueue</code> component owning the task list, the per-frame cap, per-key ordering, batches and the blocking flush. One drain system. One message per batch outcome. <code>PendingSaves</code> in the engine becomes a call to <code>enqueue</code>.</dd></div>
+    <div><dt class="lbl">wins</dt><dd><ul>
+      <li>interface: 9 components → 2</li><li>locality: 5 drain loops → 1</li><li>locality: 3 flushes → 1, covering queued and in-flight</li>
+      <li>delete jobs fix the tombstone race where it lives</li><li>leverage: tests add one component, call <code>flush_blocking</code></li><li>delete 40+ <code>.0</code> unwraps</li>
+    </ul></dd></div>
+  </dl>
+  <p class="note"><strong>Deletion test.</strong> Delete <code>StoreBackend</code> and nothing concentrates; the <code>.0</code>s just disappear. Pass-through. Delete <code>MapSaveQueue</code> after the move and five drain loops and three flushes regrow. Concentrates.</p>
+  <div class="callout">After this, <code>git/bevy-persistence</code> has one consumer left, the client identity store, which does one load at startup. Decide whether to keep the crate for that or inline a forty-line equivalent. Not a blocker either way.</div>
+</article>
+
+<!-- C3 -->
+<article id="c3">
+  <div class="titlerow">
+    <h2>3. Memory is the source of truth; one save cycle, one write path</h2>
+    <span class="badge strong">Strong</span><span class="badge tag">in-process</span><span class="badge tag">decided 2026-10-22</span>
+  </div>
+  <p class="mono">server/src/map/mod.rs:511-712 (debounce), 894-955 (shutdown), 998-1050 (AwaitingEntities) · server/src/map/preflight.rs:55-135 · server/src/map/remote_publish.rs:786-855 · server/src/map/homebase_publication.rs:620-710 · plan: docs/tasks/2026-10-22-filesystem-persistence/PLAN.md</p>
+
+  <div class="pair">
+    <div class="panel">
+      <div class="lbl">before · disk is the source of truth, read back every cycle</div>
+<pre class="mermaid">
+sequenceDiagram
+  participant S as save_dirty_chunks_debounced
+  participant D as disk
+  participant Q as async ops
+  S->>D: load meta, diff against new meta
+  S->>D: load change set, mutate, save
+  S->>D: load local head
+  S->>Q: spawn meta write with id
+  S->>Q: spawn chunk writes, no id
+  Q-->>S: meta landed
+  Note over S: draft is "durable", local head advances.<br/>Chunk files may still be in flight.
+  Note over S: AppExit runs a second copy of this<br/>that skips the change set
+</pre>
+      <p class="note">Three disk reads per cycle, two load state machines at open, a shutdown path that is a second copy of the cycle, and a durability rule that fires on the first file instead of the last.</p>
+    </div>
+    <div class="panel">
+      <div class="lbl">after · memory first, every write is a job in a batch</div>
+      <div class="deep">
+        <div class="lbl">publish state · one component per map</div>
+        <div class="code">
+          <div>PublishState::load(&amp;dir) <span class="dim">// once, at open</span></div>
+          <div>record_edits(dirty, meta) → bool</div>
+          <div>open_draft(batch, revision, draft)</div>
+          <div>commit_batch(batch) → Option&lt;Draft&gt; <span class="dim">// local head advances here</span></div>
+          <div>abandon_batch(batch) <span class="dim">// log, drop, re-dirty</span></div>
+        </div>
+        <div class="rule"></div>
+        <div class="lbl">one save cycle, two triggers</div>
+        <div class="code">
+          <div>save_cycle(map, dirty) <span class="dim">// change set, meta, entities, chunks, deletes, draft</span></div>
+          <div>debounce timer → save_cycle</div>
+          <div>AppExit → save_cycle, then queue.flush_blocking()</div>
+        </div>
+      </div>
+      <p class="note">Reads from disk happen only at open. Drafts are named by revision number and deleted once journaled. Preflight reads meta from the path in one stage.</p>
+    </div>
+  </div>
+
+  <dl class="grid3">
+    <div><dt class="lbl">problem</dt><dd>Three singletons are read, modified and written against disk every cycle, so writes must block to be readable. That rules out one non-blocking write path and leaves the shutdown copy of the cycle to drift, which it has.</dd></div>
+    <div><dt class="lbl">solution</dt><dd>Publish state lives on the map entity. Every write is a Save Queue job in a Save Batch. The local head advances when the whole batch lands. Shutdown is the same cycle plus a blocking flush.</dd></div>
+    <div><dt class="lbl">wins</dt><dd><ul>
+      <li>locality: one save cycle</li><li>interface: 2 load state machines → 0</li><li>durability means the whole revision</li>
+      <li>fixes the final-window publish gap</li><li>fixes draft-id collisions</li><li>3 disk reads per cycle → 0</li>
+    </ul></dd></div>
+  </dl>
+  <p class="note"><strong>Decisions.</strong> Settled with the owner on 2026-10-21 and 2026-10-22, recorded as D1 to D12 in the plan. This candidate now depends on candidate 2 and lands as step three.</p>
+</article>
+
+<!-- C4 -->
+<article id="c4">
+  <div class="titlerow">
+    <h2>4. Make the storage seam real, or stop paying for it</h2>
+    <span class="badge explore">Worth exploring</span><span class="badge tag">local-substitutable</span>
+  </div>
+  <p class="mono">git/bevy-persistence/src/store.rs · every impl Store&lt; in crates/ · server/tests/{world_persistence.rs, voxel_persistence.rs, world_object_edit.rs} (52 tests, all tempfile) · server/src/persistence/mod.rs:1100-1385</p>
+
+  <div class="pair">
+    <div class="panel">
+      <div class="lbl">before · a generic seam with one kind of adapter behind it</div>
+      <div style="border: 2px dashed var(--muted); border-radius: 6px; padding: 0.7rem; display: grid; gap: 0.5rem;">
+        <div class="lbl">Store&lt;K, V&gt; · Clone + Send + Sync + 'static</div>
+        <div class="chips"><span class="chip">fs ×9 (server, engine)</span><span class="chip">fs ×1 (client)</span><span class="chip">FileSystemStore JSON (unused)</span></div>
+        <div class="lbl">adapters that are not the filesystem</div>
+        <div class="chips"><span class="chip leak">none in crates/</span><span class="chip">MemoryStore, FailingStore: only inside bevy-persistence's own tests</span></div>
+      </div>
+      <p class="note">One kind of adapter means a hypothetical seam. The repo pays for it in type parameters, bounds and <code>.0</code> unwraps, and tests still write real files. The seam that does vary, <code>AsyncStore</code> for Blossom and Nostr, is a different trait and is fine.</p>
+    </div>
+    <div class="panel">
+      <div class="lbl">after · two honest options</div>
+      <div class="option good">
+        <div><strong>(a) Concrete. Recommended first.</strong></div>
+        <div><code>MapSaveDir</code> is a plain struct. Tests keep using <code>tempdir</code>, which they already do and which is fast. The generic trait, its bounds and its component wrapper are deleted.</div>
+      </div>
+      <div class="deep">
+        <div class="lbl">(b) Real seam, only if (a) proves slow or flaky</div>
+        <div class="code"><div>trait Blobs { read(rel) · write_atomic(rel, bytes) · delete(rel) · list(dir) }</div></div>
+        <div class="chips"><span class="chip hid">FsBlobs</span><span class="chip hid">MemBlobs</span></div>
+        <div class="dim small">Layout, codec, versions, staging and promote all sit above the seam and run in memory. Two adapters, so the seam is real.</div>
+      </div>
+    </div>
+  </div>
+
+  <dl class="grid3">
+    <div><dt class="lbl">problem</dt><dd><code>Store&lt;K,V&gt;</code> was built as a seam for varying backends. Nothing varies, so it is pure cost. It also sits at the wrong level. A fake behind it would have to re-implement the layout, and the layout is the part worth testing.</dd></div>
+    <div><dt class="lbl">solution</dt><dd>Drop the trait. If an in-memory adapter is ever wanted, put the seam below the layout at the byte level, where an adapter is ten lines.</dd></div>
+    <div><dt class="lbl">wins</dt><dd><ul>
+      <li>delete 3 type parameters from every store use</li><li>a seam placed where an adapter is cheap</li><li>revision tests could run in memory</li>
+    </ul></dd></div>
+  </dl>
+</article>
+
+<article class="bugs plain">
+  <h2>Latent bugs the walk exposed</h2>
+  <p class="small">Each one lives in the glue that candidates 1 and 2 would delete. Decide whether to fix first or pin as a test and fix during the move.</p>
+  <div class="sites">
+    <div class="band leak">server/src/map/mod.rs:873-892 <span>save_dirty_chunks_flush never drains PendingSaves.queue. Chunks evicted into the queue, or left there by the 16-per-frame cap, are not written on shutdown.</span></div>
+    <div class="band leak">server/src/map/mod.rs:924 <span>when is_dirty is false at AppExit, chunk tasks already in flight are never flushed.</span></div>
+    <div class="band leak">server/src/map/mod.rs:661-674 <span>the tombstone cancel filters only the queue. A task already spawned recreates the deleted file. The homebase delete at homebase_publication.rs:316 does not filter the queue at all.</span></div>
+    <div class="band leak">server/src/map/mod.rs:68-81 <span>log_save_errors keeps only completions with an id. Every chunk and chunk-entity completion is id-less, so they are all discarded, and ChunkSaveFailed is logged twice.</span></div>
+    <div class="band leak">server/src/map/mod.rs:274-276 vs 262-273 <span>unpublished/ drafts are rooted at the active revision dir; heads and change set at the canonical dir. A restore silently changes where pending drafts live.</span></div>
+    <div class="band leak">every Fs*Store::save <span>the temp file is path.with_extension("bin.tmp"), fixed per key. Two in-flight writes to the same key share it and corrupt each other. Nothing prevents two spawns for one chunk.</span></div>
+    <div class="band leak">server/src/map/mod.rs:1108 · persistence/mod.rs:414-475 <span>SaveOpIdAllocator restarts at zero each run and draft files are never deleted, so every run's first draft overwrites unpublished/1.bin. An un-journaled draft from the previous run is lost if the process dies before publishing it.</span></div>
+  </div>
+</article>
+
+<article class="plain">
+  <h2>Delete outright, no design needed</h2>
+  <ul>
+    <li><code>bootstrap_filesystem_revision</code>, no callers</li>
+    <li><code>delete_materialized_chunk</code> and <code>delete_materialized_chunk_entities</code>, no callers</li>
+    <li><code>FileSystemStore&lt;V&gt;</code> in bevy-persistence, unused by crates/</li>
+    <li>the return value of <code>enqueue_dirty_chunks</code>, ignored at its one call site</li>
+    <li>the <code>Some(save_id)</code> arms in <code>poll_map_entities</code>, <code>poll_chunk_entity_ops</code>, <code>normalize_chunk_save_completions</code>, unreachable today</li>
+    <li><code>save_dirty_chunks_sync</code> in two test files, once a real flush exists</li>
+    <li>the <code>retain(|c| c.id.is_some())</code> in <code>log_save_errors</code></li>
+  </ul>
+</article>
+
+<article class="plain fine">
+  <h2>Deep already, leave alone</h2>
+  <p class="small">The revision lifecycle is one coherent module with about twenty tests. That covers <code>materialize_validated_map_save</code>, staging, <code>atomically_promote_staged_revision</code>, pointer validation, quarantine and rollback. It should move <em>behind</em> <code>MapSaveDir</code> as <code>stage</code> / <code>promote</code> but its logic stays as is. <code>MapChangeSet</code> semantics. The <code>AsyncStore</code> seam and its Blossom / Nostr adapters. The publish journal state machine in <code>remote_publish.rs</code>, which is out of scope here.</p>
+</article>
+
+<article class="plain link">
+  <h2>How this fits the Map Instance review</h2>
+  <p class="small">That review's candidate 3 moves envelope building and the dirty-chunk drain <em>into</em> the Map Instance as <code>instance.flush_dirty(&amp;mut storage)</code>, and names a <code>ChunkStorage::for_dir(map_dir)</code> it writes to. Candidates 1 and 2 here are that <code>storage</code>: <code>MapSaveDir</code> is the directory, <code>MapSaveQueue</code> is the async pump. They compose without either review touching the other's internals. The Map Instance hands over <code>(pos, ChunkData)</code> jobs. The queue and directory take it from there. Candidate 3 there can land before or after candidates 1 and 2 here.</p>
+</article>
+
+</section>
+
+<section class="top" id="top-recommendation">
+  <div class="lbl">top recommendation</div>
+  <h2><a href="#c1">1. One module owns the save directory</a></h2>
+  <p>It is the pure half, with no ECS, no task pool and no frame ordering to reason about. It deletes the most copied code, seven atomic writes, nine file-name literals and a duplicated envelope type. It has the smallest blast radius. And candidate 2 needs it, because a single save queue can only exist once one thing knows how to write any key.</p>
+  <p class="dim">Decided 2026-10-22: a behaviour suite at the disk seam is written first and is the acceptance criterion for all three steps. See docs/tasks/2026-10-22-filesystem-persistence/PLAN.md.</p>
+</section>
+
+</main>

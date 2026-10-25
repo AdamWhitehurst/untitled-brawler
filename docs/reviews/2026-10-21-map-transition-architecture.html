@@ -1,0 +1,964 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Map Transition Review</title>
+    <script src="https://cdn.tailwindcss.com/3.4.17"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose", flowchart: { htmlLabels: true, curve: "basis" } });
+    </script>
+    <style>
+      /* Layout: one centred column of editorial cards, before/after diagrams side by side, stacking on phones. */
+      :root {
+        --bg: #faf9f7; --surface: #ffffff; --surface-2: #f3f1ed;
+        --fg: #16181d; --fg-2: #353a44; --fg-3: #4b515c; --fg-4: #6b7280;
+        --line: #e4e2dd; --line-2: #c9c6bf;
+        --accent: #3f3fb8; --accent-bg: #ecebfa; --accent-line: #4b4bd0;
+        --ok-bg: #d8f3e6; --ok-fg: #0b5a3d;
+        --warn-bg: #fbeccb; --warn-fg: #7a4a07;
+        --spec-bg: #e7e5e0; --spec-fg: #353a44;
+        --bar-amber: #f5dd8f; --bar-red: #f6c4c4; --bar-slate: #cfd3d9;
+        --leak: #c0392b; --leak-bg: #fbe9e7; --band-amber: #d9930d;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          --bg: #141412; --surface: #1d1d1a; --surface-2: #262521;
+          --fg: #ebe8e1; --fg-2: #d2cfc7; --fg-3: #b3afa6; --fg-4: #8f8b82;
+          --line: #34332e; --line-2: #4c4a43;
+          --accent: #aeb0ff; --accent-bg: #23224a; --accent-line: #7072f0;
+          --ok-bg: #0f3d2b; --ok-fg: #a9ebcd;
+          --warn-bg: #3f2b08; --warn-fg: #f5d78a;
+          --spec-bg: #34332e; --spec-fg: #d2cfc7;
+          --bar-amber: #8a6512; --bar-red: #7a2c2c; --bar-slate: #4c5563;
+          --leak: #f28b7d; --leak-bg: #3a1f1c; --band-amber: #c98b1a;
+          color-scheme: dark;
+        }
+      }
+      :root[data-theme="dark"] {
+        --bg: #141412; --surface: #1d1d1a; --surface-2: #262521;
+        --fg: #ebe8e1; --fg-2: #d2cfc7; --fg-3: #b3afa6; --fg-4: #8f8b82;
+        --line: #34332e; --line-2: #4c4a43;
+        --accent: #aeb0ff; --accent-bg: #23224a; --accent-line: #7072f0;
+        --ok-bg: #0f3d2b; --ok-fg: #a9ebcd;
+        --warn-bg: #3f2b08; --warn-fg: #f5d78a;
+        --spec-bg: #34332e; --spec-fg: #d2cfc7;
+        --bar-amber: #8a6512; --bar-red: #7a2c2c; --bar-slate: #4c5563;
+        --leak: #f28b7d; --leak-bg: #3a1f1c; --band-amber: #c98b1a;
+        color-scheme: dark;
+      }
+      body {
+        background: var(--bg); color: var(--fg);
+        padding-left: max(16px, env(safe-area-inset-left, 0px));
+        padding-right: max(16px, env(safe-area-inset-right, 0px));
+      }
+      /* Tailwind utility colours mapped onto the tokens so both themes read correctly. */
+      body .bg-stone-50 { background-color: var(--bg); }
+      body .bg-white { background-color: var(--surface); }
+      body .bg-stone-100 { background-color: var(--surface-2); }
+      body .bg-indigo-50 { background-color: var(--accent-bg); }
+      body .bg-red-50 { background-color: var(--leak-bg); }
+      body .text-slate-900 { color: var(--fg); }
+      body .text-slate-700 { color: var(--fg-2); }
+      body .text-slate-600 { color: var(--fg-3); }
+      body .text-slate-500 { color: var(--fg-4); }
+      body .text-indigo-700 { color: var(--accent); }
+      body .text-red-800 { color: var(--leak); }
+      body .border-slate-200 { border-color: var(--line); }
+      body .border-slate-300, body .border-slate-400, body .border-slate-500 { border-color: var(--line-2); }
+      body .border-slate-700, body .border-slate-800 { border-color: var(--fg-3); }
+      body .border-indigo-600 { border-color: var(--accent-line); }
+      body .border-red-400, body .border-red-500, body .border-red-600 { border-color: var(--leak); }
+      body .border-amber-500 { border-color: var(--band-amber); }
+      body .bg-emerald-100 { background-color: var(--ok-bg); } body .text-emerald-800 { color: var(--ok-fg); }
+      body .bg-amber-100 { background-color: var(--warn-bg); } body .text-amber-800 { color: var(--warn-fg); }
+      body .bg-slate-100, body .bg-slate-200 { background-color: var(--spec-bg); }
+      body .bg-amber-200 { background-color: var(--bar-amber); }
+      body .bg-red-200 { background-color: var(--bar-red); }
+      body .bg-slate-300 { background-color: var(--bar-slate); }
+      body .decoration-indigo-400 { text-decoration-color: var(--accent-line); }
+      .grid > * { min-width: 0; }
+      pre.mermaid { overflow-x: auto; max-width: 100%; }
+      h1, h2 { text-wrap: balance; }
+      a:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; }
+      .seam { border-style: dashed; }
+      .deep { background: linear-gradient(135deg, #0f172a, #1e293b); color: #f8fafc; }
+      .lbl { font-size: 0.65rem; letter-spacing: 0.12em; text-transform: uppercase; }
+      .mermaid { font-size: 13px; }
+      .band { border-left-width: 4px; }
+    </style>
+  </head>
+  <body class="bg-stone-50 text-slate-900 font-sans">
+    <main class="max-w-6xl mx-auto px-6 py-12 space-y-14">
+
+      <header class="space-y-3">
+        <h1 class="font-serif text-4xl">Architecture review: <span class="text-indigo-700">map transitions</span></h1>
+        <p class="text-sm text-slate-600">untitled-brawler · 2026-10-21 · scope: room / map transition flow, server and client</p>
+        <div class="flex flex-wrap gap-4 text-xs text-slate-600 pt-2">
+          <span><span class="inline-block w-4 h-3 border border-slate-500 align-middle mr-1"></span>module</span>
+          <span><span class="inline-block w-4 h-0 border-t-2 border-dashed border-slate-500 align-middle mr-1"></span>seam</span>
+          <span><span class="inline-block w-4 h-0 border-t-2 border-red-600 align-middle mr-1"></span>leak across a seam</span>
+          <span><span class="inline-block w-4 h-3 deep align-middle mr-1"></span>deep module</span>
+        </div>
+      </header>
+
+      <!-- Orientation: one diagram of the current flow -->
+      <section class="rounded-xl border border-slate-200 bg-white p-6 space-y-3">
+        <h2 class="font-serif text-xl">The flow as it is today</h2>
+        <p class="text-sm text-slate-600">One player presses the map-switch button. Every box is a system. Every label on an edge is a piece of state the next box has to go and find.</p>
+        <pre class="mermaid">
+flowchart LR
+  REQ[handle_map_switch_requests<br/><i>map/switching.rs</i>]
+  Q[(PendingMapPreflights<br/>queue)]
+  SP[spawn_map_preflight_tasks<br/><i>one active at a time</i>]
+  AP[ActiveMapPreflight<br/>task entity, 4 stages]
+  POLL[poll_map_persistence_preflight]
+  MAPE[map entity<br/>MapLoadState]
+  ENT[poll_map_entities]
+  CRP[commit_ready_map_preflights]
+  CMT[commit_map_transition<br/>10 params]
+  TP[TransitionPending +<br/>PendingTransition on player]
+  CL[client: 5-phase state machine]
+  DONE[complete_map_transition]
+
+  REQ -- "PendingMapSwitchPreflight on player" --> Q
+  Q --> SP --> AP --> POLL
+  POLL -- "configure / block" --> MAPE
+  MAPE -- AwaitingEntities --> ENT -- Ready --> CRP
+  AP -. "MapPreflightKind::MapSwitch{client,player,current_map}" .-> CRP
+  CRP --> CMT --> TP
+  CMT -- MapTransitionStart --> CL
+  CL -- MapTransitionReady --> DONE
+  TP -.-> DONE
+
+  classDef leak stroke:#dc2626,stroke-width:2px,color:#7f1d1d;
+  class AP,CRP leak
+  linkStyle 7 stroke:#dc2626,stroke-width:2px;
+        </pre>
+        <p class="text-xs text-slate-500">All of the server systems above sit in one unordered <code>add_systems(Update, (...))</code> tuple (<code>crates/server/src/map/mod.rs:1118-1158</code>). Frame count from request to <code>MapTransitionStart</code> depends on the scheduler's pick. That alone explains why the flow feels nondeterministic.</p>
+        <div class="border-t border-slate-200 pt-3">
+          <div class="lbl text-slate-500 mb-2">What the walk turned up (read from source. Items marked verified were traced end to end in a second pass)</div>
+          <ul class="text-sm text-slate-700 space-y-1 list-disc pl-5">
+            <li><b>Returning to a loaded map re-runs preflight.</b> Nothing checks the target's <code>MapLoadState</code> before queueing; <code>configure_map_from_meta</code> then inserts a fresh <code>VoxelMapInstance</code> on the live map entity and sets <code>AwaitingEntities</code>, so saved respawn points are spawned again (<code>preflight.rs:541-570</code>, <code>mod.rs:405-444, 1027-1042</code>). → <a href="#c1" class="underline">candidate 1</a></li>
+            <li><b>Ready / End messages carry no transition id,</b> and the login path never sets <code>PendingTransition</code>, so a switch request during the initial load is accepted and the client's first Ready completes the second transition (<code>gameplay.rs:545-577</code>, <code>switching.rs:37-43</code>). → <a href="#c2" class="underline">candidate 2</a></li>
+            <li><b>Spawn points duplicate on disk.</b> <code>validate_respawn_points</code> is gated on "any map Ready", so it spawns a default point for a homebase many frames before that map's saved points load, and the extra point is saved back. At overworld startup the same thing happens or not depending on executor order. The spawn position does not vary today only because every point sits at the default (<code>gameplay.rs:47-50, 149-162</code>, <code>mod.rs:1037-1042</code>). Verified. → <a href="#c4" class="underline">candidate 4</a></li>
+            <li><b>A dead player can switch maps.</b> Neither the request handler nor the UI checks for <code>RespawnTimer</code>. If the client reports Ready before the timer expires, phase 2 removes the physics disables while the body is still dead, leaving an invisible, collidable corpse on the server for up to four seconds. Verified. → <a href="#c8" class="underline">candidate 8</a></li>
+            <li><b>One lost packet hangs a transition.</b> If the datagram carrying <code>MapTransitionStart</code> is lost, a new-map chunk on the unordered channel arrives first, the transport acks it, the client drops it as unregistered, and nothing resends it. Loading has no timeout. Verified. It needs loss or reordering, so localhost cannot show it. → <a href="#c7" class="underline">candidate 7</a></li>
+            <li><b>Abilities are not room-scoped, but it is harmless.</b> <code>ActiveAbility</code> entities get <code>Replicate::to_clients(All)</code> with no <code>MapInstanceId</code> (<code>ability/activation.rs:169-173</code>). Verified that they carry no position or visuals and the client does nothing with a foreign one, so the cost is bandwidth. Projectiles staying on the old map is correct. → <a href="#c10" class="underline">candidate 10</a></li>
+            <li><b>Blocked switches are never reported to the client,</b> and a disconnect mid-preflight reaches an <code>expect</code> on the sender (<code>preflight.rs:394-400</code>, <code>transition.rs:56-58</code>). → <a href="#c2" class="underline">candidate 2</a></li>
+            <li><b>Tests do not cross the real interface.</b> The server tests spawn markers in an app with no systems. <code>rooms.rs</code> re-implements the observer instead of registering it. The client test file is a stub pointing at an integration test that does not exist.</li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="candidates" class="space-y-12">
+
+        <!-- ================= Candidate 1 ================= -->
+        <article id="c1" class="rounded-xl border border-slate-200 bg-white p-6 space-y-6">
+          <div class="flex items-start justify-between gap-4 flex-wrap">
+            <h2 class="font-serif text-2xl">1. Put map lifecycle on the map entity and take the player out of preflight</h2>
+            <div class="flex gap-2">
+              <span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span>
+              <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">in-process</span>
+            </div>
+          </div>
+
+          <div class="font-mono text-sm text-slate-700 space-y-0.5">
+            <div>crates/server/src/map/preflight.rs</div>
+            <div>crates/server/src/map/types.rs</div>
+            <div>crates/server/src/map/switching.rs</div>
+            <div>crates/server/src/map/preparation.rs</div>
+            <div>crates/server/src/gameplay.rs (process_pending_initial_spawns)</div>
+          </div>
+
+          <div class="grid md:grid-cols-2 gap-6">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <div class="lbl text-slate-500 mb-2">Before: preflight is a job queue that knows about players</div>
+              <pre class="mermaid">
+flowchart TB
+  K["MapPreflightKind::MapSwitch<br/>client_entity, player_entity,<br/>current_map_id, requested_at"]
+  Q[(PendingMapPreflights)]
+  SP[spawn_map_preflight_tasks<br/>returns if any active]
+  T[ActiveMapPreflight<br/>separate task entity]
+  S1[LoadFilesystemMeta]
+  S2[WaitingFilesystemMeta]
+  S3[WaitingRemoteDecision]
+  S4[CommitTransition]
+  M[map entity<br/>MapLoadState]
+  C[commit_ready_map_preflights<br/>calls commit_map_transition]
+  K --> Q --> SP --> T
+  T --> S1 --> S2 --> S3 --> S4
+  S1 -. "None: wait for commands" .-> S1
+  S2 --> M
+  S3 --> M
+  S4 --> C
+  C -. "remove PendingMapSwitchPreflight" .-> K
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class K,S4,C leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 flex flex-col gap-3">
+              <div class="lbl text-slate-500">After: one per-map state machine, no player in it</div>
+              <div class="deep rounded-lg p-4 space-y-2">
+                <div class="lbl opacity-70">Map lifecycle module</div>
+                <div class="font-mono text-xs">MapRegistry::ensure(map_id) → Entity</div>
+                <div class="font-mono text-xs">MapLoadState on the map entity</div>
+                <div class="border-t border-slate-600 pt-2 text-xs opacity-60 space-y-1">
+                  <div>CheckingPersistence { fs meta → remote decision }</div>
+                  <div>AwaitingEntities</div>
+                  <div>Ready { params }  ·  Blocked(reason)</div>
+                  <div>quarantine, materialize, store backends</div>
+                </div>
+              </div>
+              <div class="border-t-2 border-dashed border-slate-400 text-center lbl text-slate-500 pt-1">seam: MapInstanceId → MapLoadState</div>
+              <div class="grid grid-cols-2 gap-2">
+                <div class="rounded border border-slate-300 bg-white p-2 text-xs">
+                  <div class="lbl text-slate-500">player transition</div>
+                  <div>reads <code>MapLoadState::Ready</code></div>
+                </div>
+                <div class="rounded border border-slate-300 bg-white p-2 text-xs">
+                  <div class="lbl text-slate-500">initial spawn</div>
+                  <div>reads <code>MapLoadState::Ready</code></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <dl class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <dt class="font-semibold">Problem</dt>
+              <dd class="text-slate-700">Map readiness and one player's switch intent share a state machine. <code>MapPreflightKind::MapSwitch</code> carries client, player and source map through four preflight stages (<code>types.rs:26-35</code>, <code>preflight.rs:53-200</code>) so that a fourth stage, <code>CommitTransition</code>, can call the transition module (<code>preflight.rs:316-383</code>). The map entity already has <code>MapLoadState</code>, so a task entity and the map both track the same fact. The task entity also spawns the placeholder and then returns <code>None</code> to wait a frame for commands to apply (<code>preflight.rs:385-408</code>). One active preflight at a time (<code>preflight.rs:28-50</code>) means two players switching to different homebases serialise, and a slow remote fetch stalls every switch and every login. Because the queue never consults the target's <code>MapLoadState</code>, a map that is already <code>Ready</code> gets preflighted again and its live <code>VoxelMapInstance</code> replaced.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Solution</dt>
+              <dd class="text-slate-700">Move the preflight stages into <code>MapLoadState::CheckingPersistence</code> on the map entity itself, driven by one system over <code>Query&lt;&amp;mut MapLoadState&gt;</code>. The interface becomes <code>MapRegistry::ensure(map_id)</code> plus a read of <code>MapLoadState</code>. Delete <code>PendingMapPreflights</code>, <code>ActiveMapPreflight</code>, <code>MapPreflightKind</code>, <code>MapPreflightStage::CommitTransition</code>, <code>PendingMapSwitchPreflight</code>, <code>commit_ready_map_preflights</code>, <code>spawn_map_preflight_tasks</code>, <code>clear_pending_switch_marker</code>. Startup overworld and homebase are the same path with different seeds.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Wins</dt>
+              <dd>
+                <ul class="list-disc pl-5 text-slate-700 space-y-1">
+                  <li>locality: persistence decisions in one place</li>
+                  <li>deletion test passes: 8 names vanish</li>
+                  <li>interface shrinks to ensure + MapLoadState</li>
+                  <li>no "wait for commands" stage</li>
+                  <li>maps load concurrently, per entity</li>
+                  <li>tests: spawn map, step, assert MapLoadState</li>
+                </ul>
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <!-- ================= Candidate 2 ================= -->
+        <article id="c2" class="rounded-xl border border-slate-200 bg-white p-6 space-y-6">
+          <div class="flex items-start justify-between gap-4 flex-wrap">
+            <h2 class="font-serif text-2xl">2. One per-player transition state machine on the server</h2>
+            <div class="flex gap-2">
+              <span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span>
+              <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">in-process</span>
+            </div>
+          </div>
+
+          <div class="font-mono text-sm text-slate-700 space-y-0.5">
+            <div>crates/server/src/transition.rs</div>
+            <div>crates/server/src/map/switching.rs</div>
+            <div>crates/server/src/gameplay.rs (commit_initial_overworld_spawn, process_pending_initial_spawns)</div>
+            <div>crates/protocol/src/transition/types.rs · crates/protocol/src/map/transition.rs</div>
+            <div>crates/server/src/map/mod.rs (plugin ordering)</div>
+          </div>
+
+          <div class="grid md:grid-cols-2 gap-6">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <div class="lbl text-slate-500 mb-3">Before: phase is whichever marker happens to be present</div>
+              <div class="text-xs">
+                <div class="grid gap-1 mb-1 lbl text-slate-500" style="grid-template-columns: 13rem repeat(5, 1fr)">
+                  <div></div><div>request</div><div>preflight</div><div>commit</div><div>await client</div><div>done</div>
+                </div>
+                <div class="grid gap-1 items-center font-mono" style="grid-template-columns: 13rem repeat(5, 1fr)">
+                  <div class="text-slate-600">PendingMapSwitchPreflight</div>
+                  <div class="h-5 bg-amber-200 rounded"></div><div class="h-5 bg-amber-200 rounded"></div><div class="h-5 bg-amber-200 rounded"></div><div></div><div></div>
+                  <div class="text-slate-600">PendingMapPreflight (queue)</div>
+                  <div class="h-5 bg-amber-200 rounded"></div><div></div><div></div><div></div><div></div>
+                  <div class="text-slate-600">ActiveMapPreflight.stage</div>
+                  <div></div><div class="h-5 bg-amber-200 rounded"></div><div class="h-5 bg-amber-200 rounded"></div><div></div><div></div>
+                  <div class="text-slate-600">PendingTransition (protocol)</div>
+                  <div></div><div></div><div class="h-5 bg-red-200 rounded"></div><div class="h-5 bg-red-200 rounded"></div><div></div>
+                  <div class="text-slate-600">TransitionPending (server)</div>
+                  <div></div><div></div><div class="h-5 bg-red-200 rounded"></div><div class="h-5 bg-red-200 rounded"></div><div></div>
+                  <div class="text-slate-600">ChunkTicket / freeze bundle</div>
+                  <div></div><div></div><div class="h-5 bg-slate-300 rounded"></div><div class="h-5 bg-slate-300 rounded"></div><div class="h-5 bg-slate-300 rounded"></div>
+                  <div class="text-slate-600">PendingInitialSpawn (login)</div>
+                  <div class="h-5 bg-amber-200 rounded"></div><div class="h-5 bg-amber-200 rounded"></div><div></div><div></div><div></div>
+                </div>
+                <p class="mt-3 text-slate-600">Five systems write these, none ordered relative to each other. The login path (<code>gameplay.rs:545-577</code>) is a second copy of commit with the "remove from old room" step left out.</p>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <div class="lbl text-slate-500 mb-2">After: one component, one explicit phase enum</div>
+              <pre class="mermaid">
+stateDiagram-v2
+  direction TB
+  [*] --> Requested : switch request or login
+  Requested --> AwaitingMap : ensure map
+  AwaitingMap --> Committed : map Ready
+  AwaitingMap --> Failed : map Blocked
+  Committed --> AwaitingClient : rooms moved, Start sent
+  AwaitingClient --> [*] : Ready received, End sent
+              </pre>
+              <p class="text-xs text-slate-600 mt-2">Component <code>MapTransition { from: Option&lt;MapInstanceId&gt;, to, phase }</code> on the player. One chained system group advances it; <code>from: None</code> is the login case.</p>
+            </div>
+          </div>
+
+          <dl class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <dt class="font-semibold">Problem</dt>
+              <dd class="text-slate-700">The transition module is shallow. <code>commit_map_transition</code> takes ten parameters (<code>transition.rs:14-25</code>) and the caller has to assemble rooms, senders, respawn query and map params before calling it. Phase is implicit in which marker is present. <code>PendingTransition</code> (protocol, both sides) and <code>TransitionPending</code> (server) coexist with near-identical names and the same lifetime. <code>TransitionReadySent</code> is never inserted anywhere, only removed (<code>client/src/transition.rs:275</code>). The login path reimplements commit (<code>gameplay.rs:545-577</code>) without the busy marker, and <code>MapTransitionReady</code> / <code>MapTransitionEnd</code> are unit structs, so nothing ties a client's Ready to the transition it answers. Systems that hand state to each other sit in an unordered tuple (<code>map/mod.rs:1118-1158</code>), so the number of frames between request and <code>MapTransitionStart</code> varies run to run.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Solution</dt>
+              <dd class="text-slate-700">Replace the markers with one <code>MapTransition</code> component holding an explicit phase. One system advances every player's transition in a fixed order each frame, consuming <code>MapLoadState</code> from candidate 1 and spawn points from candidate 4. Login becomes a transition with no source room. Give <code>MapTransitionStart</code>, <code>Ready</code> and <code>End</code> a transition id so a late Ready cannot complete the wrong transition, and emit a <code>MapTransitionFailed</code> for the Blocked case. <code>PendingTransition</code> stays as the client-visible marker only if the UI still needs it. <code>TransitionPending</code> and <code>TransitionReadySent</code> go. Register the system group <code>.chain()</code> after the map lifecycle system.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Wins</dt>
+              <dd>
+                <ul class="list-disc pl-5 text-slate-700 space-y-1">
+                  <li>locality: every phase in one match</li>
+                  <li>deterministic frame count per phase</li>
+                  <li>leverage: login and switch share one implementation</li>
+                  <li>two markers and one dead marker deleted</li>
+                  <li>tests: insert component, step, assert phase + sent messages</li>
+                </ul>
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <!-- ================= Candidate 3 ================= -->
+        <article id="c3" class="rounded-xl border border-slate-200 bg-white p-6 space-y-6">
+          <div class="flex items-start justify-between gap-4 flex-wrap">
+            <h2 class="font-serif text-2xl">3. Room membership follows <code>MapInstanceId</code>, never hand-triggered</h2>
+            <div class="flex gap-2">
+              <span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span>
+              <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">in-process</span>
+            </div>
+          </div>
+
+          <div class="font-mono text-sm text-slate-700 space-y-0.5">
+            <div>crates/server/src/map/mod.rs (RoomRegistry, on_map_instance_id_added)</div>
+            <div>crates/protocol/src/transition/relocation.rs</div>
+            <div>crates/server/src/transition.rs · crates/server/src/gameplay.rs</div>
+          </div>
+
+          <div class="grid md:grid-cols-2 gap-6">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <div class="lbl text-slate-500 mb-2">Before: two mechanisms decide who is in which room</div>
+              <pre class="mermaid">
+flowchart TB
+  subgraph auto[" observer path "]
+    A1[On&lt;Add, MapInstanceId&gt;] --> A2[RoomRegistry::get_or_create] --> A3[RoomEvent AddEntity]
+  end
+  subgraph manual[" hand-triggered path "]
+    M1[commit_map_transition] --> M2[RoomEvent RemoveSender]
+    M1 --> M3[relocate_remove:<br/>RemoveEntity + insert MapInstanceId]
+    M4[complete_map_transition] --> M5[RoomEvent AddSender]
+    M4 --> M6[relocate_add: AddEntity]
+    M7[commit_initial_overworld_spawn] --> M8[TransitionPending.new_room]
+  end
+  M3 -. "replace does not fire Add,<br/>observer stays silent" .-> A1
+  M7 -. "entity already added by observer;<br/>AddEntity again in phase 2" .-> A3
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class M3,M8 leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 flex flex-col gap-3">
+              <div class="lbl text-slate-500">After: rooms are a projection of two components</div>
+              <div class="deep rounded-lg p-4 space-y-2">
+                <div class="lbl opacity-70">Room membership module</div>
+                <div class="font-mono text-xs">entity.MapInstanceId  ⇒  entity ∈ room(map)</div>
+                <div class="font-mono text-xs">client.ClientMapView(map)  ⇒  sender ∈ room(map)</div>
+                <div class="border-t border-slate-600 pt-2 text-xs opacity-60 space-y-1">
+                  <div>On&lt;Insert, MapInstanceId&gt; → AddEntity</div>
+                  <div>On&lt;Replace, MapInstanceId&gt; → RemoveEntity (old value still readable)</div>
+                  <div>same pair for ClientMapView → Add/RemoveSender</div>
+                  <div>RoomRegistry stays internal</div>
+                </div>
+              </div>
+              <div class="border-t-2 border-dashed border-slate-400 text-center lbl text-slate-500 pt-1">seam: component value, no RoomEvent outside</div>
+              <div class="rounded border border-slate-300 bg-white p-2 text-xs">
+                <div class="lbl text-slate-500">transition module</div>
+                <div>writes <code>MapInstanceId</code> on the player and <code>ClientMapView</code> on the client. Nothing else.</div>
+              </div>
+            </div>
+          </div>
+
+          <dl class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <dt class="font-semibold">Problem</dt>
+              <dd class="text-slate-700">Room membership leaks across the seam. The observer (<code>map/mod.rs:1052-1069</code>) adds any entity to a room on <code>Add</code>, but a replaced <code>MapInstanceId</code> does not fire <code>Add</code>, so the transition module triggers <code>RoomEvent</code>s by hand (<code>relocation.rs</code>, <code>transition.rs:21-24, 100-110</code>) and carries <code>new_room: Entity</code> inside <code>TransitionPending</code>. The login path relies on the observer for the entity and on phase 2 for the sender, then re-adds the entity. World objects, respawn points and the dummy target go through the observer. The player goes through both. Any new kind of entity that moves maps has to know this, and the ones that were never told show it. <code>ActiveAbility</code> entities replicate to every client with no <code>MapInstanceId</code>, and projectiles keep the caster's old map after a switch.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Solution</dt>
+              <dd class="text-slate-700">Make room membership a projection of two component values, <code>MapInstanceId</code> on an entity and a new <code>ClientMapView(MapInstanceId)</code> on the client entity. Replace the single <code>Add</code> observer with an <code>Insert</code>/<code>Replace</code> pair for each (Bevy 0.18 fires <code>Replace</code> before the old value is overwritten). Delete <code>relocation.rs</code>, the hand-triggered <code>RoomEvent</code>s and <code>new_room</code>. A freeze bundle (<code>RigidBodyDisabled</code>, <code>ColliderDisabled</code>, <code>DisableRollback</code>) can become one <code>Frozen</code> component with its own observers, by the same principle.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Wins</dt>
+              <dd>
+                <ul class="list-disc pl-5 text-slate-700 space-y-1">
+                  <li>locality: one place decides room membership</li>
+                  <li>leverage: any entity that changes map just moves</li>
+                  <li>no double AddEntity, no silent stale membership</li>
+                  <li>RoomEvent never appears outside the module</li>
+                  <li>tests: rooms.rs already tests this interface</li>
+                </ul>
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <!-- ================= Candidate 4 ================= -->
+        <article id="c4" class="rounded-xl border border-slate-200 bg-white p-6 space-y-6">
+          <div class="flex items-start justify-between gap-4 flex-wrap">
+            <h2 class="font-serif text-2xl">4. One spawn-point module</h2>
+            <div class="flex gap-2">
+              <span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span>
+              <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">in-process</span>
+            </div>
+          </div>
+
+          <div class="font-mono text-sm text-slate-700 space-y-0.5">
+            <div>crates/server/src/transition.rs:31-35</div>
+            <div>crates/server/src/gameplay.rs:149-162, 289-347, 449-453</div>
+          </div>
+
+          <div class="grid md:grid-cols-2 gap-6">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <div class="lbl text-slate-500 mb-3">Before: three selection rules, three fallbacks</div>
+              <div class="space-y-2 text-xs">
+                <div class="band border-red-500 bg-white rounded p-2">
+                  <div class="font-mono">commit_map_transition</div>
+                  <div class="text-slate-600">first <code>RespawnPoint</code> in query iteration order for the target map · fallback <code>DEFAULT_SPAWN_POS</code></div>
+                </div>
+                <div class="band border-red-500 bg-white rounded p-2">
+                  <div class="font-mono">process_pending_initial_spawns</div>
+                  <div class="text-slate-600">first <code>RespawnPoint</code> in query iteration order for Overworld · fallback <code>DEFAULT_SPAWN_POS</code></div>
+                </div>
+                <div class="band border-red-500 bg-white rounded p-2">
+                  <div class="font-mono">nearest_respawn_pos (death)</div>
+                  <div class="text-slate-600">nearest <code>RespawnPoint</code> on <b>any</b> map, no <code>MapInstanceId</code> filter · fallback <code>DEFAULT_SPAWN_POS</code></div>
+                </div>
+                <div class="band border-amber-500 bg-white rounded p-2">
+                  <div class="font-mono">validate_respawn_points</div>
+                  <div class="text-slate-600">spawns a default point per registered map, so the fallbacks above should be dead but are not provably so</div>
+                </div>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 flex flex-col gap-3">
+              <div class="lbl text-slate-500">After: one interface, one ordering rule</div>
+              <div class="flex gap-3 items-end h-48">
+                <div class="flex-1 flex flex-col justify-end">
+                  <div class="lbl text-slate-500 text-center mb-1">interface</div>
+                  <div class="border border-slate-500 bg-white rounded p-2 text-xs font-mono h-16 flex flex-col justify-center">
+                    <div>arrival(map) → Vec3</div>
+                    <div>respawn(map, near) → Vec3</div>
+                  </div>
+                </div>
+                <div class="flex-1 flex flex-col justify-end">
+                  <div class="lbl text-slate-500 text-center mb-1">implementation</div>
+                  <div class="deep rounded p-2 text-xs h-40 flex flex-col justify-center gap-1 opacity-90">
+                    <div>filter by map</div>
+                    <div>stable order (entity id or name)</div>
+                    <div>nearest-by-distance with tie-break</div>
+                    <div>panic if a map has no point</div>
+                    <div>default-point seeding</div>
+                  </div>
+                </div>
+              </div>
+              <p class="text-xs text-slate-600">A <code>SystemParam</code> wrapping the respawn query. No <code>DEFAULT_SPAWN_POS</code> outside it.</p>
+            </div>
+          </div>
+
+          <dl class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <dt class="font-semibold">Problem</dt>
+              <dd class="text-slate-700">Three different pieces of code answer "where does a player appear". Two callers take the first query match, which is archetype order, not a stable order. With more than one respawn point per map the arrival position changes between runs. The death path ignores the map entirely (<code>gameplay.rs:334-347</code>). It works today only because every map's default point is the same <code>(0, 5, 0)</code>. Each caller silently falls back to <code>DEFAULT_SPAWN_POS</code>, which the project rules forbid without a <code>trace!</code> and which hides a map with no spawn point. The default-point seeding runs as soon as any map is Ready, which is before a homebase's saved points load, so each homebase gets an extra default point and the extra one is persisted. Repeat that over save and load cycles and the points pile up.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Solution</dt>
+              <dd class="text-slate-700">One <code>SpawnPoints</code> system param with two methods. Deterministic ordering inside. A missing point is a loud failure since <code>validate_respawn_points</code> guarantees one per map. The three call sites shrink to one call each.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Wins</dt>
+              <dd>
+                <ul class="list-disc pl-5 text-slate-700 space-y-1">
+                  <li>deterministic arrival position</li>
+                  <li>death respawn respects the map</li>
+                  <li>locality: one fallback policy</li>
+                  <li>deletion test: three copies collapse to one</li>
+                  <li>tests: table of points in, position out</li>
+                </ul>
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <!-- ================= Candidate 5 ================= -->
+        <article id="c5" class="rounded-xl border border-slate-200 bg-white p-6 space-y-6">
+          <div class="flex items-start justify-between gap-4 flex-wrap">
+            <h2 class="font-serif text-2xl">5. Client transition: a pure step behind a readiness seam</h2>
+            <div class="flex gap-2">
+              <span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span>
+              <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">local-substitutable</span>
+            </div>
+          </div>
+
+          <div class="font-mono text-sm text-slate-700 space-y-0.5">
+            <div>crates/client/src/transition.rs</div>
+            <div>crates/protocol/src/transition/types.rs (ClientTransitionState)</div>
+            <div>crates/ui/src/state.rs (MapTransitionState) · crates/ui/src/lib.rs</div>
+            <div>crates/voxel_map_engine (new readiness query)</div>
+          </div>
+
+          <div class="grid md:grid-cols-2 gap-6">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <div class="lbl text-slate-500 mb-3">Before: one system reaches through five engine internals</div>
+              <div class="space-y-1 text-xs">
+                <div class="band border-slate-700 bg-white rounded p-2 font-mono">update_transition_state (11 params)</div>
+                <div class="pl-4 space-y-1">
+                  <div class="band border-red-500 bg-white rounded p-1.5"><span class="font-mono">VoxelMapInstance.chunk_levels</span> <span class="text-slate-500">column present?</span></div>
+                  <div class="band border-red-500 bg-white rounded p-1.5"><span class="font-mono">VoxelMapInstance.chunks_needing_remesh</span></div>
+                  <div class="band border-red-500 bg-white rounded p-1.5"><span class="font-mono">ChunkWorkTracker.remeshing</span> <span class="text-slate-500">arrives a frame later</span></div>
+                  <div class="band border-red-500 bg-white rounded p-1.5"><span class="font-mono">Children</span> <span class="text-slate-500">arrives when first mesh exists</span></div>
+                  <div class="band border-red-500 bg-white rounded p-1.5"><span class="font-mono">VoxelChunk + Mesh3d + Has&lt;Collider&gt;</span></div>
+                  <div class="band border-amber-500 bg-white rounded p-1.5"><span class="font-mono">MessageManager.entity_mapper</span> <span class="text-slate-500">polled per frame</span></div>
+                  <div class="band border-amber-500 bg-white rounded p-1.5"><span class="font-mono">NextState&lt;MapTransitionState&gt;</span> <span class="text-slate-500">second copy of phase</span></div>
+                  <div class="band border-slate-400 bg-white rounded p-1.5"><span class="font-mono">cleanup_stale_map_entities</span> <span class="text-slate-500">"safety net for omissions"</span></div>
+                </div>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 flex flex-col gap-3">
+              <div class="lbl text-slate-500">After: one readiness query, state machine is a function</div>
+              <div class="rounded border border-slate-500 bg-white p-2 text-xs">
+                <div class="lbl text-slate-500">protocol, composing the engine</div>
+                <div class="font-mono">region_ready(map, column, radius, y_range) → bool</div>
+                <div class="text-slate-500">engine answers data and mesh state. Protocol adds the collider check, since the engine does not depend on avian.</div>
+              </div>
+              <div class="border-t-2 border-dashed border-slate-400 text-center lbl text-slate-500 pt-1">seam: real engine in game, stub in tests (two adapters)</div>
+              <div class="deep rounded-lg p-4 space-y-2">
+                <div class="lbl opacity-70">ClientTransition module</div>
+                <div class="font-mono text-xs">step(&amp;mut self, Inputs) → Vec&lt;Effect&gt;</div>
+                <div class="border-t border-slate-600 pt-2 text-xs opacity-60 space-y-1">
+                  <div>Inputs: start msg, region ready, entities resolved, end received</div>
+                  <div>Effects: SendReady, Unfreeze(player), UiState(Transitioning|Playing)</div>
+                  <div>phase enum is the only phase; UI derives from it</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <dl class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <dt class="font-semibold">Problem</dt>
+              <dd class="text-slate-700"><code>check_spatial_readiness</code> (<code>client/src/transition.rs:290-371</code>) encodes which voxel-engine internals exist on which frame. The commit "fix: map transitioning hangs" fixed three separate causes, and one of them was this check waiting forever on columns the server never generates. The check also gives <code>chunk_levels</code> a different meaning than the engine does (the client writes a level of 0 when the first chunk of a column arrives, so a half-received column passes), iterates the y range inclusively where the engine's <code>column_to_chunks</code> is exclusive, and runs unordered against <code>poll_remesh_tasks</code>, so it can pass in the frame a remesh lands before the mesh entity exists. The state machine, message sending, UI state and player unfreeze are one system with eleven parameters, so someone emptied the client test file with the note that the flow "requires a full lightyear message pipeline to test meaningfully" and points at an integration test that does not exist. <code>MapTransitionState</code> in <code>ui</code> is a second copy of <code>TransitionPhase</code>. A per-frame despawn sweep exists to catch "omissions".</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Solution</dt>
+              <dd class="text-slate-700">One readiness query for a column region, placed in protocol because colliders live there. The engine exposes data and mesh state through one function. Nothing outside the engine reads <code>chunk_levels</code> or <code>chunks_needing_remesh</code> again. Make the client transition a plain type whose <code>step</code> takes inputs and returns effects. A thin system gathers inputs and applies effects. The UI reads <code>TransitionPhase</code> instead of keeping its own state. Keep the safety-net sweep only until the room-membership change in candidate 3 lands, then measure whether it ever fires.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Wins</dt>
+              <dd>
+                <ul class="list-disc pl-5 text-slate-700 space-y-1">
+                  <li>readiness bugs concentrate in the engine</li>
+                  <li>state machine testable without lightyear</li>
+                  <li>one phase, not two</li>
+                  <li>interface: step in, effects out</li>
+                </ul>
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <!-- ================= Candidate 6 ================= -->
+        <article id="c6" class="rounded-xl border border-slate-200 bg-white p-6 space-y-6">
+          <div class="flex items-start justify-between gap-4 flex-wrap">
+            <h2 class="font-serif text-2xl">6. One map descriptor, spawned the same way on both sides</h2>
+            <div class="flex gap-2">
+              <span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span>
+              <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">in-process</span>
+            </div>
+          </div>
+
+          <div class="font-mono text-sm text-slate-700 space-y-0.5">
+            <div>crates/protocol/src/map/transition.rs (MapTransitionStart)</div>
+            <div>crates/server/src/map/mod.rs:405-456 (configure_map_from_meta, terrain_key_for_map)</div>
+            <div>crates/server/src/map/preparation.rs:125-133 (transition_params)</div>
+            <div>crates/client/src/transition.rs:115-163 (spawn_map_from_transition, terrain_def_name)</div>
+          </div>
+
+          <div class="grid md:grid-cols-2 gap-6">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <div class="lbl text-slate-500 mb-2">Before: three places assemble the map's identity</div>
+              <pre class="mermaid">
+flowchart LR
+  META[MapMeta / default seed] --> S[server configure_map_from_meta<br/>terrain_key_for_map]
+  TD1[terrain def] --> S
+  S --> MP[MapTransitionParams] --> MSG[MapTransitionStart<br/>seed, generation_version,<br/>bounds, chunk_size, column_y_range]
+  MSG --> C[client spawn_map_from_transition<br/>terrain_def_name]
+  TD2[terrain def again] --> C
+  C -. "ignores generation_version and bounds,<br/>hardcodes version 0" .-> MSG
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class C leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 flex flex-col gap-3">
+              <div class="lbl text-slate-500">After: one value, one spawn function in protocol</div>
+              <div class="deep rounded-lg p-4 space-y-2">
+                <div class="lbl opacity-70">Map descriptor module (protocol)</div>
+                <div class="font-mono text-xs">MapDescriptor { id, terrain_key, seed, generation_version, dimensions }</div>
+                <div class="font-mono text-xs">spawn_map_instance(commands, &amp;descriptor, &amp;terrain_registry) → Entity</div>
+                <div class="border-t border-slate-600 pt-2 text-xs opacity-60 space-y-1">
+                  <div>terrain key lookup lives here once</div>
+                  <div>generator construction lives here once</div>
+                  <div>server adds persistence stores on top, client adds nothing</div>
+                </div>
+              </div>
+              <div class="border-t-2 border-dashed border-slate-400 text-center lbl text-slate-500 pt-1">seam: the descriptor is the wire format</div>
+              <div class="text-xs text-slate-600"><code>MapTransitionStart</code> carries a <code>MapDescriptor</code> plus the spawn position and readiness radius. <code>MapTransitionParams</code> is deleted.</div>
+            </div>
+          </div>
+
+          <dl class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <dt class="font-semibold">Problem</dt>
+              <dd class="text-slate-700">The description of a map is split across the terrain def, the persisted meta and the message, and each side recombines them with its own code. <code>terrain_key_for_map</code> and <code>terrain_def_name</code> are the same function in two crates. The client passes generation version 0 to <code>VoxelMapConfig::new</code> and reads bounds from its own terrain def, so two fields of <code>MapTransitionStart</code> are decorative. A server and client that disagree about a map have no single value to compare.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Solution</dt>
+              <dd class="text-slate-700">A <code>MapDescriptor</code> value type in protocol, produced once by the map lifecycle module (candidate 1) and stored on the map entity. One protocol function spawns a <code>VoxelMapInstance</code> from it. The server layers its stores on the returned entity. The client uses it as is. The message carries the descriptor verbatim.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Wins</dt>
+              <dd>
+                <ul class="list-disc pl-5 text-slate-700 space-y-1">
+                  <li>leverage: one spawn path, two callers</li>
+                  <li>locality: terrain and generator choice in one place</li>
+                  <li>no decorative message fields</li>
+                  <li>tests: descriptor in, map components out</li>
+                </ul>
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <!-- ================= Candidate 7 ================= -->
+        <article id="c7" class="rounded-xl border border-slate-200 bg-white p-6 space-y-6">
+          <div class="flex items-start justify-between gap-4 flex-wrap">
+            <h2 class="font-serif text-2xl">7. Chunk streaming gated by the transition, not by convention</h2>
+            <div class="flex gap-2">
+              <span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span>
+              <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">in-process</span>
+            </div>
+          </div>
+
+          <div class="font-mono text-sm text-slate-700 space-y-0.5">
+            <div>crates/server/src/map/mod.rs:2338-2510 (push_chunks_to_clients, ClientChunkVisibility)</div>
+            <div>crates/client/src/map.rs:325-340 (handle_chunk_data_sync)</div>
+            <div>crates/protocol/src/lib.rs:185-202 (ChunkChannel unordered, MapChannel ordered)</div>
+            <div>crates/client/src/transition.rs:413-447 (ApplyDeferred ordering comment)</div>
+          </div>
+
+          <div class="grid md:grid-cols-2 gap-6">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <div class="lbl text-slate-500 mb-2">Before: two channels, one assumption about arrival order</div>
+              <pre class="mermaid">
+sequenceDiagram
+  participant S as server
+  participant C as client
+  S->>C: MapTransitionStart (MapChannel, ordered)
+  Note over S: next frame: ChunkTicket applied,<br/>visibility reset, no UnloadColumn for old map
+  S->>C: ChunkDataSync x N (ChunkChannel, unordered)
+  Note over C: if a ChunkDataSync lands before Start<br/>the map is unregistered: dropped silently
+  Note over S: sent_chunks already records it: never resent
+  C-->>S: MapTransitionReady (may never fire)
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 flex flex-col gap-3">
+              <div class="lbl text-slate-500">After: chunk delivery is a phase of the transition</div>
+              <div class="deep rounded-lg p-4 space-y-2">
+                <div class="lbl opacity-70">Client chunk visibility module</div>
+                <div class="font-mono text-xs">ClientChunkVisibility { map, sent, acked }</div>
+                <div class="border-t border-slate-600 pt-2 text-xs opacity-60 space-y-1">
+                  <div>streams only while the client's transition phase allows it</div>
+                  <div>a chunk the client could not place is reported back and resent</div>
+                  <div>old-map columns are unloaded explicitly on map change</div>
+                </div>
+              </div>
+              <div class="border-t-2 border-dashed border-slate-400 text-center lbl text-slate-500 pt-1">seam: phase from candidate 2, not frame timing</div>
+              <div class="text-xs text-slate-600">Either start streaming only after a client <code>MapTransitionAck</code>, or send chunks on <code>MapChannel</code> during a transition so ordering is guaranteed by the channel.</div>
+            </div>
+          </div>
+
+          <dl class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <dt class="font-semibold">Problem</dt>
+              <dd class="text-slate-700">Chunk streaming and the transition only agree by timing. <code>push_chunks_to_clients</code> starts the new map's chunks on the frame after commit and resets its sent-set without telling the client to unload the old map. The client drops any chunk for a map it has not registered and the server never resends it. The channels are independent, so the ordering the <code>ApplyDeferred</code> comment defends only holds within one frame. Verified against the vendored lightyear source. Start goes out in frame N, the first new-map chunk in N+1, usually under a millisecond later since the server loop has no frame wait. If the Start datagram is lost, the chunk packet arrives first, the transport acks it at packet level, the client drops the message as unregistered, and the reliable sender never resends it. Start is resent after about 1.5 round trips, by which time the chunk is gone. There is no timeout in Loading and no client-to-server chunk request, so a dropped chunk inside the readiness radius is a permanent hang. Localhost cannot show it because delivery there is in order.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Solution</dt>
+              <dd class="text-slate-700">Make chunk streaming for a client a function of its transition phase. The server streams only when the client has acknowledged the Start, and sends an explicit unload for the old map. Make a chunk the client could not place a loud event, not a silent <code>continue</code>. Tests: a sent-set that resets on map change, and a resend after a reported miss.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Wins</dt>
+              <dd>
+                <ul class="list-disc pl-5 text-slate-700 space-y-1">
+                  <li>no reliance on cross-channel timing</li>
+                  <li>no silent chunk drop</li>
+                  <li>locality: streaming policy in one module</li>
+                  <li>a hung Loading phase has a cause</li>
+                </ul>
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <!-- ================= Candidate 8 ================= -->
+        <article id="c8" class="rounded-xl border border-slate-200 bg-white p-6 space-y-6">
+          <div class="flex items-start justify-between gap-4 flex-wrap">
+            <h2 class="font-serif text-2xl">8. A <code>Frozen</code> component instead of a freeze bundle in four places</h2>
+            <div class="flex gap-2">
+              <span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span>
+              <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">in-process</span>
+            </div>
+          </div>
+
+          <div class="font-mono text-sm text-slate-700 space-y-0.5">
+            <div>crates/server/src/transition.rs:47-54, 106-112</div>
+            <div>crates/server/src/gameplay.rs:185-192, 325-328</div>
+            <div>crates/client/src/transition.rs:77-86, 266-276</div>
+            <div>crates/client/src/gameplay.rs:105-124</div>
+          </div>
+
+          <div class="grid md:grid-cols-2 gap-6">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <div class="lbl text-slate-500 mb-3">Before: each site picks its own subset of the bundle</div>
+              <div class="space-y-1.5 text-xs">
+                <div class="band border-red-500 bg-white rounded p-2"><span class="font-mono">server commit</span> <span class="text-slate-600">LinearVelocity, DisableRollback, ColliderDisabled, RigidBodyDisabled, PendingTransition, ChunkTicket</span></div>
+                <div class="band border-red-500 bg-white rounded p-2"><span class="font-mono">server complete</span> <span class="text-slate-600">removes RigidBodyDisabled, ColliderDisabled, DisableRollback, PendingTransition</span></div>
+                <div class="band border-red-500 bg-white rounded p-2"><span class="font-mono">server death</span> <span class="text-slate-600">RigidBodyDisabled, ColliderDisabled; respawn removes those plus RespawnTimer</span></div>
+                <div class="band border-red-500 bg-white rounded p-2"><span class="font-mono">client start</span> <span class="text-slate-600">RigidBodyDisabled, ColliderDisabled, DisableRollback, PendingTransition, Position, LinearVelocity</span></div>
+                <div class="band border-red-500 bg-white rounded p-2"><span class="font-mono">client complete</span> <span class="text-slate-600">removes those plus the never-inserted TransitionReadySent</span></div>
+                <div class="band border-red-500 bg-white rounded p-2"><span class="font-mono">client death</span> <span class="text-slate-600">Visibility::Hidden, RigidBodyDisabled, ColliderDisabled</span></div>
+              </div>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 flex flex-col gap-3">
+              <div class="lbl text-slate-500">After: one component, observers do the physics</div>
+              <div class="flex gap-3 items-end h-44">
+                <div class="flex-1 flex flex-col justify-end">
+                  <div class="lbl text-slate-500 text-center mb-1">interface</div>
+                  <div class="border border-slate-500 bg-white rounded p-2 text-xs font-mono h-14 flex flex-col justify-center">
+                    <div>Frozen { reason: Transition | Dead }</div>
+                  </div>
+                </div>
+                <div class="flex-1 flex flex-col justify-end">
+                  <div class="lbl text-slate-500 text-center mb-1">implementation</div>
+                  <div class="deep rounded p-2 text-xs h-36 flex flex-col justify-center gap-1 opacity-90">
+                    <div>On&lt;Add&gt;: disable body + collider, zero velocity, DisableRollback</div>
+                    <div>On&lt;Remove&gt;: re-enable</div>
+                    <div>reason drives visibility on the client</div>
+                  </div>
+                </div>
+              </div>
+              <p class="text-xs text-slate-600">Shared in protocol, so server and client freeze identically. Candidate 2's state machine inserts and removes one component.</p>
+            </div>
+          </div>
+
+          <dl class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <dt class="font-semibold">Problem</dt>
+              <dd class="text-slate-700">"Hold this entity still" takes four to six avian and lightyear components to say, and each of six sites chooses a different subset. Transition and death do overlap, verified. Nothing on the switch path checks <code>RespawnTimer</code>, so a dead player can request a switch. If the client reports Ready first, phase 2 strips <code>RigidBodyDisabled</code> and <code>ColliderDisabled</code> while <code>RespawnTimer</code> and zero health remain, and the server has a collidable corpse that eats projectiles and blocks other players for up to four seconds while every client still draws nothing there. If the timer expires first, the server unfreezes the body on the new map while the client is still loading. On the client, Complete removes the disables from every predicted character, not just the controlled one, so any dead remote character on the new map becomes collidable and stays invisible. The Complete phase also removes a marker that is never inserted.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Solution</dt>
+              <dd class="text-slate-700">One <code>Frozen</code> component in protocol with Add and Remove observers that own the physics and rollback components. The transition and respawn modules insert and remove <code>Frozen</code> and nothing else. Overlap becomes explicit, a set of reasons that unfreezes when empty.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Wins</dt>
+              <dd>
+                <ul class="list-disc pl-5 text-slate-700 space-y-1">
+                  <li>locality: physics disables in one observer pair</li>
+                  <li>death during a switch has defined behaviour</li>
+                  <li>six sites shrink to one insert or remove</li>
+                  <li>tests: add Frozen, assert components</li>
+                </ul>
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <!-- ================= Candidate 9 ================= -->
+        <article id="c9" class="rounded-xl border border-slate-200 bg-white p-6 space-y-6">
+          <div class="flex items-start justify-between gap-4 flex-wrap">
+            <h2 class="font-serif text-2xl">9. Name the schedule: an ordered transition system set</h2>
+            <div class="flex gap-2">
+              <span class="rounded-full bg-amber-100 text-amber-800 px-3 py-1 text-xs font-semibold">Worth exploring</span>
+              <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">in-process</span>
+            </div>
+          </div>
+
+          <div class="font-mono text-sm text-slate-700 space-y-0.5">
+            <div>crates/server/src/map/mod.rs:1118-1158 (ServerMapPlugin)</div>
+            <div>crates/server/src/gameplay.rs:27-34 (login chain, separate add_systems)</div>
+            <div>crates/client/src/transition.rs:413-447 (ClientTransitionPlugin)</div>
+          </div>
+
+          <div class="grid md:grid-cols-2 gap-6">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <div class="lbl text-slate-500 mb-3">Before: one Update tuple, order chosen per run</div>
+              <div class="flex flex-wrap gap-1.5 text-xs font-mono">
+                <span class="rounded border border-slate-300 bg-white px-2 py-1">spawn_map_preflight_tasks</span>
+                <span class="rounded border border-slate-300 bg-white px-2 py-1">poll_map_persistence_preflight</span>
+                <span class="rounded border border-slate-300 bg-white px-2 py-1">poll_map_entities</span>
+                <span class="rounded border border-slate-300 bg-white px-2 py-1">commit_ready_map_preflights</span>
+                <span class="rounded border border-slate-300 bg-white px-2 py-1">handle_map_switch_requests</span>
+                <span class="rounded border border-slate-300 bg-white px-2 py-1">complete_map_transition</span>
+                <span class="rounded border border-slate-300 bg-white px-2 py-1">push_chunks_to_clients</span>
+                <span class="rounded border border-slate-300 bg-white px-2 py-1">validate_respawn_points</span>
+                <span class="rounded border border-slate-300 bg-white px-2 py-1">process_pending_initial_spawns</span>
+                <span class="rounded border border-red-400 bg-red-50 px-2 py-1 text-red-800">… 12 more unrelated systems in the same tuple</span>
+              </div>
+              <p class="text-xs text-slate-600 mt-3">Every handoff is a deferred Command plus whatever order the executor picks. Request to <code>MapTransitionStart</code> takes between N and N+4 frames depending on the pick.</p>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <div class="lbl text-slate-500 mb-3">After: phases in one declared order</div>
+              <div class="space-y-1 text-xs">
+                <div class="band border-slate-800 bg-white rounded p-2 font-mono">MapSystems::ReceiveRequests</div>
+                <div class="band border-slate-800 bg-white rounded p-2 font-mono">MapSystems::MapLifecycle</div>
+                <div class="band border-slate-800 bg-white rounded p-2 font-mono">MapSystems::AdvanceTransitions</div>
+                <div class="band border-slate-800 bg-white rounded p-2 font-mono">MapSystems::Rooms</div>
+                <div class="band border-slate-800 bg-white rounded p-2 font-mono">MapSystems::StreamChunks</div>
+              </div>
+              <p class="text-xs text-slate-600 mt-3"><code>configure_sets(Update, (...).chain())</code> once; every transition system names its set. Login and switch systems share the sets. The frame count per phase becomes a constant you can assert in a test.</p>
+            </div>
+          </div>
+
+          <dl class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <dt class="font-semibold">Problem</dt>
+              <dd class="text-slate-700">Order is the interface of a Bevy schedule, and here nobody declared it. The login chain lives in a different plugin with no edge to the map systems. Verified against Bevy 0.18.1: eleven pairs among the transition systems have conflicting access and no edge, the executor picks their order from thread-pool timing, and ambiguity detection is off and never enabled in this repo. What that changes today is smaller than I first claimed. Spawn position does not vary, because every respawn point sits at the default. What varies is whether <code>MapTransitionStart</code> goes out this frame or next, and whether an extra respawn point gets saved to disk at startup. Several "wait a frame for commands" branches exist only because the writer could not say which system runs first. Still the cheapest determinism win on the list, and it survives every other candidate, but it is insurance for the next bug rather than a fix for a current one.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Solution</dt>
+              <dd class="text-slate-700">Turn on <code>ambiguity_detection: LogLevel::Warn</code> for the server Update schedule first, so the list of conflicting pairs comes from Bevy rather than from a reviewer. Then one <code>MapSystems</code> set enum in the server crate, configured as a chain. Each transition system goes in a set. A test runs one update with a request queued and asserts the exact phase reached.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Wins</dt>
+              <dd>
+                <ul class="list-disc pl-5 text-slate-700 space-y-1">
+                  <li>deterministic frames per phase</li>
+                  <li>ordering readable in one place</li>
+                  <li>"wait for commands" branches become provably dead or provably needed</li>
+                  <li>independent of candidates 1 to 8</li>
+                </ul>
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <!-- ================= Candidate 10 ================= -->
+        <article id="c10" class="rounded-xl border border-slate-200 bg-white p-6 space-y-6">
+          <div class="flex items-start justify-between gap-4 flex-wrap">
+            <h2 class="font-serif text-2xl">10. Abilities inherit their map from the caster</h2>
+            <div class="flex gap-2">
+              <span class="rounded-full bg-slate-200 text-slate-700 px-3 py-1 text-xs font-semibold">Speculative</span>
+              <span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs">in-process</span>
+            </div>
+          </div>
+
+          <div class="font-mono text-sm text-slate-700 space-y-0.5">
+            <div>crates/protocol/src/ability/activation.rs:160-173 (ActiveAbility replicated to All, no MapInstanceId)</div>
+            <div>crates/protocol/src/ability/spawn.rs:88-100, 140, 228, 276</div>
+            <div>crates/client/src/input/control.rs:171-172 (assumes room scoping)</div>
+          </div>
+
+          <div class="grid md:grid-cols-2 gap-6">
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4">
+              <div class="lbl text-slate-500 mb-2">Before: each spawn path decides whether it is on a map</div>
+              <pre class="mermaid">
+flowchart TB
+  CAST[caster: MapInstanceId]
+  AA[ActiveAbility<br/>Replicate to All, no map id]
+  PS[AbilityProjectileSpawn<br/>copies caster map id at spawn]
+  HB[hitboxes / local bullets<br/>copies caster map id at spawn]
+  CAST --> AA
+  CAST --> PS
+  CAST --> HB
+  AA -. "visible on every map" .-> X[all clients]
+  PS -. "caster switches map:<br/>projectile stays in old room" .-> OLD[old room]
+  classDef leak stroke:#dc2626,stroke-width:2px;
+  class AA,PS leak
+              </pre>
+            </div>
+            <div class="rounded-lg border border-slate-200 bg-stone-50 p-4 flex flex-col gap-3">
+              <div class="lbl text-slate-500">After: map is a relationship, not a copied value</div>
+              <div class="deep rounded-lg p-4 space-y-2">
+                <div class="lbl opacity-70">Ability placement module</div>
+                <div class="font-mono text-xs">every ability entity: CastBy(caster) → MapInstanceId derived</div>
+                <div class="border-t border-slate-600 pt-2 text-xs opacity-60 space-y-1">
+                  <div>observer on CastBy add: copy caster's MapInstanceId</div>
+                  <div>policy on caster map change: despawn or follow, chosen once</div>
+                  <div>ActiveAbility gets a map id like everything else</div>
+                </div>
+              </div>
+              <div class="border-t-2 border-dashed border-slate-400 text-center lbl text-slate-500 pt-1">seam: MapInstanceId, then candidate 3 handles rooms</div>
+            </div>
+          </div>
+
+          <dl class="grid md:grid-cols-3 gap-6 text-sm">
+            <div>
+              <dt class="font-semibold">Problem</dt>
+              <dd class="text-slate-700">Downgraded after verification. <code>ActiveAbility</code> entities do replicate to every client (no <code>NetworkVisibility</code> means lightyear sends to the full <code>Replicate</code> target), but they carry no position or visuals, the client's only consumer fails its caster lookup and does nothing, and they live under two seconds. The cost is bandwidth and a predicted entity per cast. A projectile staying on the caster's old map is correct, since the collision filter is per map and every caster lookup is fallible. The control.rs comment is still wrong during the room gap, but that is candidate 3's problem.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Solution</dt>
+              <dd class="text-slate-700">Add <code>MapInstanceId</code> and <code>NetworkVisibility</code> to the <code>ActiveAbility</code> entity at spawn, which is a two-line change and belongs in housekeeping. The relationship-driven version only earns its slot if abilities ever need to follow a caster across maps, and nothing does today.</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Wins</dt>
+              <dd>
+                <ul class="list-disc pl-5 text-slate-700 space-y-1">
+                  <li>bandwidth: casts stop fanning out to every client</li>
+                  <li>one fewer opt-in to forget</li>
+                  <li>not worth a seam on its own</li>
+                </ul>
+              </dd>
+            </div>
+          </dl>
+        </article>
+
+        <!-- ================= Housekeeping ================= -->
+        <section class="rounded-xl border border-slate-200 bg-stone-100 p-6 space-y-2">
+          <div class="lbl text-slate-500">Housekeeping, not deepening</div>
+          <p class="text-xs text-slate-600">Cheap fixes. Do them alongside whichever candidate you pick.</p>
+          <ul class="text-sm text-slate-700 list-disc pl-5 space-y-1">
+            <li><code>TransitionReadySent</code> is never inserted; delete it.</li>
+            <li>Unused fields: <code>PendingMapSwitchPreflight.{target_map_id, requested_at}</code>, <code>PendingInitialSpawn.requested_at</code>, <code>TransitionPending.target_map_id</code>.</li>
+            <li>The server initialises <code>ClientTransitionState</code> because <code>TransitionPlugin</code> is in the shared plugin.</li>
+            <li><code>poll_map_entities</code> uses <code>return</code> where <code>continue</code> is meant (<code>mod.rs:1034</code>), stalling other maps by a frame.</li>
+            <li>Stale comments: registration line refs in <code>transition/plugin.rs</code>, the client test stub's missing integration test, "radius (200)" in <code>ticket.rs:60</code>.</li>
+            <li>Client <code>ChunkTicket::map_transition</code> is never switched back to a player ticket after the transition.</li>
+          </ul>
+        </section>
+
+      </section>
+
+      <!-- ================= Top recommendation ================= -->
+      <section id="top-recommendation" class="rounded-xl border-2 border-indigo-600 bg-indigo-50 p-8 space-y-3">
+        <div class="lbl text-indigo-700">Top recommendation</div>
+        <h2 class="font-serif text-2xl"><a href="#c1" class="underline decoration-indigo-400">1. Put map lifecycle on the map entity</a>, then <a href="#c2" class="underline decoration-indigo-400">2. one per-player transition state machine</a></h2>
+        <p class="text-sm text-slate-700">Candidate 1 is the cut that makes the rest fall out. Once preflight no longer carries a player, the transition module has nothing to do but own its own phases, and candidate 2 becomes a rewrite of two files rather than five. Two confirmed bugs stand apart from the refactor and can ship first as small fixes with regression tests. Candidate 8, since a dead player can switch maps and leave an invisible corpse. Candidate 7, since one lost packet hangs a client with no way out. Candidate 4 is small enough to go with them. I would turn on Bevy's ambiguity warning from candidate 9 the same afternoon, since it costs minutes. Candidate 3 is the right follow-up once 2 lands because <code>TransitionPending.new_room</code> is the last reason the transition module touches rooms by hand.</p>
+      </section>
+
+    </main>
+  </body>
+</html>
