@@ -68,13 +68,7 @@ cargo client-tracy    # run client with tracy feature
 cargo anim-editor     # run the standalone sprite-rig animation editor
 ```
 
-The animation editor (`crates/client_animation_editor`) previews a live humanoid rig
-through the real `sprite_rig` runtime (no physics or networking) for authoring
-`.anim.ron` clips. The save bar writes the edited clip and the animset back to
-`assets/` as canonical deterministic RON (atomic tmp+rename; the first save of an
-authored file reformats it once, subsequent saves are byte-stable), and can assign the
-working clip to a new animset slot (locomotion entry, ability, or hit_react) with the
-live preview rebuilding its animation graph in place.
+The animation editor (`crates/client_animation_editor`) previews a live humanoid rig through the real `sprite_rig` runtime (no physics or networking) for authoring `.anim.ron` clips. The top clip field loads asset-relative `.anim.ron` paths into its working preview. The save bar writes the edited clip and animset back to `assets/` as canonical deterministic RON (atomic tmp+rename; the first save of an authored file reformats it once, subsequent saves are byte-stable), and can assign the working clip to a new animset slot (locomotion entry, ability, or hit_react) with the live preview rebuilding its animation graph in place. Its speed control applies exact idle/walk/run blend thresholds and keeps paused locomotion poses on the shared playhead.
 
 ## Nostr Identities
 
@@ -185,68 +179,23 @@ For manual failure-path testing, add `SERVER_MAP_REMOTE_PUBLISH_FAIL_FIRST=1` to
 
 ### Scope, Quarantine, and Recovery
 
-v1 remote persistence covers map/layout data for the Overworld and Homebases only,
-and never progression-bearing client-published state. "Latest" means the latest
-*visible valid descendant* of the local accepted head under the configured relay
-query policy — not a global latest: relays that are down or not configured cannot
-contribute manifests.
+v1 remote persistence covers map/layout data for the Overworld and Homebases only, and never progression-bearing client-published state. "Latest" means the latest _visible valid descendant_ of the local accepted head under the configured relay query policy — not a global latest: relays that are down or not configured cannot contribute manifests.
 
 Failure handling is split by class (each logged distinctly):
 
-- **Unavailable** (relay query/Blossom fetch failed, timeout): graceful fallback to
-  local filesystem state; nothing is written or blocked.
-- **Invalid / Incomplete / Divergent** (bad signature/attestation, descriptor-root
-  mismatch, blob hash/size mismatch, disallowed Blossom host, missing ancestor
-  manifests, forked revision chain): the map is blocked from remote restore and a
-  quarantine record is written; valid local filesystem state is never overwritten.
+- **Unavailable** (relay query/Blossom fetch failed, timeout): graceful fallback to local filesystem state; nothing is written or blocked.
+- **Invalid / Incomplete / Divergent** (bad signature/attestation, descriptor-root mismatch, blob hash/size mismatch, disallowed Blossom host, missing ancestor manifests, forked revision chain): the map is blocked from remote restore and a quarantine record is written; valid local filesystem state is never overwritten.
 
-Quarantine records are RON files under `worlds/quarantine/<map>/` (override with
-`SERVER_MAP_QUARANTINE_DIR`), named by manifest hash (or `local-invalid-<timestamp>`
-when no hash applies), each recording the map id, owner, and rejection reason.
+Quarantine records are RON files under `worlds/quarantine/<map>/` (override with `SERVER_MAP_QUARANTINE_DIR`), named by manifest hash (or `local-invalid-<timestamp>` when no hash applies), each recording the map id, owner, and rejection reason.
 
-On-disk layout per map dir (`worlds/overworld/`, `worlds/homebase_<npub>/`):
-`active_revision` (pointer file naming the active materialized revision),
-`revisions/rev-<n>-<hash>/` (immutable materialized snapshots), `staging/`
-(incomplete materialization work, cleaned at startup), and the top-level
-`accepted_head.bin`/`local_head.bin`/`change_set.bin` head files. At startup the
-server validates the active pointer; if it references a missing/incomplete
-revision, it quarantines a record, removes the pointer, and rolls back to the
-top-level filesystem state.
+On-disk layout per map dir (`worlds/overworld/`, `worlds/homebase_<npub>/`): `active_revision` (pointer file naming the active materialized revision), `revisions/rev-<n>-<hash>/` (immutable materialized snapshots), `staging/` (incomplete materialization work, cleaned at startup), and the top-level `accepted_head.bin`/`local_head.bin`/`change_set.bin` head files. At startup the server validates the active pointer; if it references a missing/incomplete revision, it quarantines a record, removes the pointer, and rolls back to the top-level filesystem state.
 
-Manual recovery/rollback: stop the server, inspect `worlds/quarantine/` and the
-`active_revision` pointer, unset `SERVER_MAP_REMOTE_READ`/`SERVER_MAP_REMOTE_PUBLISH`
-to run filesystem-only (no migration needed — remote can be disabled at any time),
-and delete `active_revision` to fall back to the legacy top-level save files (or
-point it at a known-good `revisions/` directory).
+Manual recovery/rollback: stop the server, inspect `worlds/quarantine/` and the `active_revision` pointer, unset `SERVER_MAP_REMOTE_READ`/`SERVER_MAP_REMOTE_PUBLISH` to run filesystem-only (no migration needed — remote can be disabled at any time), and delete `active_revision` to fall back to the legacy top-level save files (or point it at a known-good `revisions/` directory).
 
 ### Player-Owned Homebase Publication
 
-A player can publish their own Homebase to Nostr. Because the client cannot
-faithfully reproduce the server's authoritative save bytes from replication, the
-flow is "server encodes, client signs": the client presses `F7` (the
-`PublishHomebase` action) to send a `HomebaseAttestationRequest`; the server
-classifies the durable change-set of edited chunks against freshly-generated
-terrain — chunks that still differ are uploaded to Blossom as `Present`, chunks
-reverted to generated terrain become `Tombstoned` (and their local files are
-deleted so they regenerate from seed). Chunks whose per-chunk world objects were
-placed/removed/moved/rotated are published the same way (their current object
-list, `Present`). The server chains the delta onto the accepted head,
-signs a `HomebasePublicationAttestation`, and returns an unsigned
-`NostrMapManifest`; the client signs that manifest event with the **player's**
-Nostr key and publishes it to relays, then confirms back to the server, which
-advances the accepted head and clears the published keys from its change-set so
-the next publish chains onto this revision. Each publish is a small chained delta
-of genuine edits, not a full snapshot. Remote import of a Homebase manifest is
-accepted only if it carries a valid player signature and a valid server
-attestation (the temporary Phase 3 insecure import path is removed).
+A player can publish their own Homebase to Nostr. Because the client cannot faithfully reproduce the server's authoritative save bytes from replication, the flow is "server encodes, client signs": the client presses `F7` (the `PublishHomebase` action) to send a `HomebaseAttestationRequest`; the server classifies the durable change-set of edited chunks against freshly-generated terrain — chunks that still differ are uploaded to Blossom as `Present`, chunks reverted to generated terrain become `Tombstoned` (and their local files are deleted so they regenerate from seed). Chunks whose per-chunk world objects were placed/removed/moved/rotated are published the same way (their current object list, `Present`). The server chains the delta onto the accepted head, signs a `HomebasePublicationAttestation`, and returns an unsigned `NostrMapManifest`; the client signs that manifest event with the **player's** Nostr key and publishes it to relays, then confirms back to the server, which advances the accepted head and clears the published keys from its change-set so the next publish chains onto this revision. Each publish is a small chained delta of genuine edits, not a full snapshot. Remote import of a Homebase manifest is accepted only if it carries a valid player signature and a valid server attestation (the temporary Phase 3 insecure import path is removed).
 
-Homebase publication requires the same server remote-publish configuration as the
-Overworld (`SERVER_MAP_REMOTE_PUBLISH=1` with the `SERVER_BLOSSOM_*`, `SERVER_NSEC`,
-and `NOSTR_RELAYS` settings above), plus a client running with a loaded Nostr
-identity and configured relays.
+Homebase publication requires the same server remote-publish configuration as the Overworld (`SERVER_MAP_REMOTE_PUBLISH=1` with the `SERVER_BLOSSOM_*`, `SERVER_NSEC`, and `NOSTR_RELAYS` settings above), plus a client running with a loaded Nostr identity and configured relays.
 
-> Not yet enforced: progression-bearing-data rejection and per-player entitlement
-> checks on imported Homebase data (plan item 5.7) are deferred — no progression or
-> entitlement types exist in the codebase yet. The server attestation requirement is
-> the current Homebase import security boundary; progression-data filtering is a
-> follow-up.
+> Not yet enforced: progression-bearing-data rejection and per-player entitlement checks on imported Homebase data (plan item 5.7) are deferred — no progression or entitlement types exist in the codebase yet. The server attestation requirement is the current Homebase import security boundary; progression-data filtering is a follow-up.

@@ -1,13 +1,30 @@
 use persistence::{PersistenceError, Store};
 use sprite_rig::asset::{SpriteAnimAsset, SpriteAnimSetAsset};
 use sprite_rig::serialize::{serialize_anim, serialize_animset};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// Asset root the editor reads and writes, resolved at compile time to the workspace's
 /// `assets/` — the same convention as the example's `AssetPlugin` file_path. The editor
 /// is a dev tool that runs from the workspace, so a compile-time path is acceptable.
 pub fn editor_asset_root() -> PathBuf {
     PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets"))
+}
+
+/// Normalizes toolbar input to the animset-relative `.anim.ron` path used by stores.
+pub fn normalize_clip_path(path: &str) -> Result<String, String> {
+    let path = path.trim();
+    let is_asset_relative = Path::new(path)
+        .components()
+        .all(|component| matches!(component, Component::Normal(_)));
+    if path.is_empty() {
+        Err("clip path is empty".to_string())
+    } else if !is_asset_relative {
+        Err("clip path must be asset-relative without '.' or '..' components".to_string())
+    } else if path.ends_with(".anim.ron") {
+        Ok(path.to_string())
+    } else {
+        Ok(format!("{path}.anim.ron"))
+    }
 }
 
 /// Identifies a clip file by its animset-relative path (e.g.
@@ -170,6 +187,28 @@ mod tests {
         let loaded = store.load(&key).expect("load failed").expect("file absent");
         assert_eq!(animset, loaded);
         std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    /// Clip paths accept the toolbar's extensionless form and reject empty input.
+    #[test]
+    fn clip_path_normalization_matches_toolbar_input() {
+        assert_eq!(
+            normalize_clip_path(" anims/humanoid/kick ").expect("valid path"),
+            "anims/humanoid/kick.anim.ron"
+        );
+        assert_eq!(
+            normalize_clip_path("anims/humanoid/kick.anim.ron").expect("valid path"),
+            "anims/humanoid/kick.anim.ron"
+        );
+        assert_eq!(
+            normalize_clip_path(""),
+            Err("clip path is empty".to_string())
+        );
+        let relative_error =
+            Err("clip path must be asset-relative without '.' or '..' components".to_string());
+        assert_eq!(normalize_clip_path("/tmp/kick"), relative_error.clone());
+        assert_eq!(normalize_clip_path("../kick"), relative_error.clone());
+        assert_eq!(normalize_clip_path("anims/../kick"), relative_error);
     }
 
     #[test]

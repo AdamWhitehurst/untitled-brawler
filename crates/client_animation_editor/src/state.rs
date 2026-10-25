@@ -42,14 +42,26 @@ pub enum Selection {
     Event(usize),
 }
 
+/// Original source temporarily replaced when an unassigned clip uses an existing preview slot.
+#[derive(Clone)]
+pub struct PreviewSourceBackup {
+    path: String,
+    asset: SpriteAnimAsset,
+}
+
 /// The single in-memory working model every editor view reads and every edit mutates.
 #[derive(Resource)]
 pub struct EditorState {
-    /// Working copy of the selected clip's source asset.
+    /// Working clip document shown by panels and baked through the preview slot.
     pub working: SpriteAnimAsset,
+    /// Asset-relative path loaded into `working` and used by Save clip.
+    pub working_path: String,
     /// Working copy of the animset (slot assignments, Phase 12 saves it).
     pub working_set: SpriteAnimSetAsset,
+    /// Animset slot whose graph node previews `working`; unassigned paths reuse this slot.
     pub selected_clip: ClipSlot,
+    /// Source restored when an unassigned document stops using its temporary preview host.
+    pub preview_source_backup: Option<PreviewSourceBackup>,
     /// Seconds, in `[0, working.duration]`.
     pub playhead: f32,
     pub playback: Playback,
@@ -81,7 +93,12 @@ impl EditorState {
 
     /// The clip path the selected slot refers to in the working animset, if assigned.
     pub fn selected_clip_path(&self) -> Option<&str> {
-        match &self.selected_clip {
+        self.clip_path(&self.selected_clip)
+    }
+
+    /// Resolves any slot to its path in the working animset.
+    fn clip_path(&self, slot: &ClipSlot) -> Option<&str> {
+        match slot {
             ClipSlot::Locomotion(i) => self
                 .working_set
                 .locomotion
@@ -95,6 +112,48 @@ impl EditorState {
                 .map(|s| s.as_str()),
             ClipSlot::HitReact => self.working_set.hit_react.as_deref(),
         }
+    }
+}
+
+/// Saves the selected slot's source before an unassigned document replaces it for preview.
+pub fn backup_preview_source(
+    state: &mut EditorState,
+    anim_assets: &Assets<SpriteAnimAsset>,
+    loaded_handles: &LoadedAnimHandles,
+) {
+    if state.preview_source_backup.is_none() {
+        let path = state
+            .selected_clip_path()
+            .expect("editor preview slot always has an assigned path");
+        let handle = loaded_handles
+            .0
+            .get(path)
+            .unwrap_or_else(|| panic!("no loaded handle for preview clip '{path}'"));
+        let asset = anim_assets
+            .get(handle)
+            .unwrap_or_else(|| panic!("no source asset for preview clip '{path}'"))
+            .clone();
+        state.preview_source_backup = Some(PreviewSourceBackup {
+            path: path.to_string(),
+            asset,
+        });
+    } else {
+        trace!("unassigned working document already has a preview source backup");
+    }
+}
+
+/// Restores a slot source temporarily replaced by an unassigned working document.
+pub fn restore_preview_source(
+    state: &mut EditorState,
+    anim_assets: &mut Assets<SpriteAnimAsset>,
+    loaded_handles: &LoadedAnimHandles,
+) {
+    if let Some(backup) = state.preview_source_backup.take() {
+        let handle = loaded_handles
+            .0
+            .get(&backup.path)
+            .unwrap_or_else(|| panic!("no loaded handle for preview backup '{}'", backup.path));
+        let _ = anim_assets.insert(handle.id(), backup.asset);
     }
 }
 
@@ -138,8 +197,10 @@ pub fn init_editor_state(
 
     commands.insert_resource(EditorState {
         working: working.clone(),
+        working_path: default_path.clone(),
         working_set: animset.clone(),
         selected_clip: default_slot,
+        preview_source_backup: None,
         playhead: 0.0,
         playback: Playback::Playing,
         selection: Selection::None,
@@ -153,23 +214,27 @@ pub fn init_editor_state(
 pub fn select_clip(
     state: &mut EditorState,
     slot: ClipSlot,
-    anim_assets: &Assets<SpriteAnimAsset>,
+    anim_assets: &mut Assets<SpriteAnimAsset>,
     loaded_handles: &LoadedAnimHandles,
 ) {
+    restore_preview_source(state, anim_assets, loaded_handles);
     state.selected_clip = slot;
-    let Some(asset) = state
+    let path = state
         .selected_clip_path()
-        .and_then(|path| loaded_handles.0.get(path))
+        .expect("selected clip slot has an assigned path")
+        .to_string();
+    let asset = loaded_handles
+        .0
+        .get(&path)
         .and_then(|handle| anim_assets.get(handle))
-    else {
-        // A slot with no assigned/loaded clip is a bug: the transport only offers slots
-        // read from the loaded animset.
-        panic!(
-            "selected clip slot {:?} has no loaded clip asset",
-            state.selected_clip
-        );
-    };
+        .unwrap_or_else(|| {
+            panic!(
+                "selected clip slot {:?} has no loaded clip asset",
+                state.selected_clip
+            )
+        });
     state.working = asset.clone();
+    state.working_path = path;
     state.playhead = 0.0;
     state.selection = Selection::None;
 }
@@ -202,15 +267,7 @@ pub fn assign_new_clip(
     loaded_handles: &mut LoadedAnimHandles,
     bone_defaults: &mut AnimBoneDefaults,
 ) -> Result<String, String> {
-    let new_path = new_path.trim();
-    if new_path.is_empty() {
-        return Err("clip path is empty".to_string());
-    }
-    let new_path = if new_path.ends_with(".anim.ron") {
-        new_path.to_string()
-    } else {
-        format!("{new_path}.anim.ron")
-    };
+    let new_path = crate::store::normalize_clip_path(new_path)?;
     if loaded_handles.0.contains_key(&new_path) {
         return Err(format!("'{new_path}' is already assigned"));
     }

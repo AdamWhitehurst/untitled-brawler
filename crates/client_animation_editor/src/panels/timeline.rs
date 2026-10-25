@@ -297,6 +297,7 @@ mod tests {
                 bone_timelines,
                 events: vec![],
             },
+            working_path: "anims/test/test.anim.ron".to_string(),
             working_set: SpriteAnimSetAsset {
                 rig: String::new(),
                 locomotion: LocomotionConfig { entries: vec![] },
@@ -304,6 +305,7 @@ mod tests {
                 hit_react: None,
             },
             selected_clip: ClipSlot::HitReact,
+            preview_source_backup: None,
             playhead: 0.0,
             playback: Playback::Paused,
             selection: Selection::None,

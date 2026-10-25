@@ -15,7 +15,7 @@ pub fn draw_transport(
     mut state: ResMut<EditorState>,
     mut audition: ResMut<AuditionState>,
     mut gizmo_mode: ResMut<GizmoMode>,
-    anim_assets: Res<Assets<SpriteAnimAsset>>,
+    mut anim_assets: ResMut<Assets<SpriteAnimAsset>>,
     loaded_handles: Res<LoadedAnimHandles>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -25,7 +25,7 @@ pub fn draw_transport(
 
     egui::TopBottomPanel::bottom("transport").show(ctx, |ui| {
         ui.horizontal(|ui| {
-            draw_clip_selector(ui, &mut state, &anim_assets, &loaded_handles);
+            draw_clip_selector(ui, &mut state, &mut anim_assets, &loaded_handles);
             draw_play_pause(ui, &mut state);
             draw_gizmo_mode_toggle(ui, &mut gizmo_mode);
             draw_audition_controls(ui, &mut audition, &state);
@@ -52,7 +52,7 @@ fn draw_gizmo_mode_toggle(ui: &mut egui::Ui, gizmo_mode: &mut GizmoMode) {
 fn draw_clip_selector(
     ui: &mut egui::Ui,
     state: &mut EditorState,
-    anim_assets: &Assets<SpriteAnimAsset>,
+    anim_assets: &mut Assets<SpriteAnimAsset>,
     loaded_handles: &LoadedAnimHandles,
 ) {
     let mut selected = state.selected_clip.clone();
